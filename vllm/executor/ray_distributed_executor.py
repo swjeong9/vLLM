@@ -277,17 +277,31 @@ class RayDistributedExecutor(DistributedExecutorBase):
         # After sorting, the workers on the same node will be
         # close to each other, and the workers on the driver
         # node will be placed first.
-        sorted_worker_metadata = sorted(worker_metadata,
-                                        key=sort_by_driver_then_worker_ip)
+        # 아래 코드가 원래 vLLM 코드이다. 나는 재정렬 하는것을 원치 않는다. 따라서 주석처리 한다.
+        # sorted_worker_metadata = sorted(worker_metadata,
+        #                                 key=sort_by_driver_then_worker_ip)
+        # start_rank = 0 if self.use_ray_spmd_worker else 1
+        # for i, item in enumerate(sorted_worker_metadata):
+        #     item.adjusted_rank = i + start_rank
+        # self.workers = [item.worker for item in sorted_worker_metadata]
+        # rerank_mapping = {
+        #     item.created_rank: item.adjusted_rank
+        #     for item in sorted_worker_metadata
+        # }
+        # self._run_workers("adjust_rank", rerank_mapping)
+        
+        # 재 정렬하지 않고 adjust_rank 를 그대로 사용하는 코드를 추가한다.
+        # 이렇게 하는 이유는 하지 않으면 오류가 나니까..
         start_rank = 0 if self.use_ray_spmd_worker else 1
-        for i, item in enumerate(sorted_worker_metadata):
+        for i, item in enumerate(worker_metadata):
             item.adjusted_rank = i + start_rank
-        self.workers = [item.worker for item in sorted_worker_metadata]
+        self.workers = [item.worker for item in worker_metadata]
         rerank_mapping = {
             item.created_rank: item.adjusted_rank
-            for item in sorted_worker_metadata
+            for item in worker_metadata
         }
         self._run_workers("adjust_rank", rerank_mapping)
+        # 여기까지 추가한 코드
 
         # Get the set of GPU IDs used on each node.
         worker_node_and_gpu_ids = []
