@@ -689,7 +689,7 @@ class GroupCoordinator:
         # 메타데이터 전송 (기존 send_object 사용, CPU 그룹 활용)
         # send_object의 dst 파라미터는 *그룹 내* 로컬 랭크입니다.
         self.send_object(metadata_list, dst=dst_pp_rank_in_group)
-        logger.debug(f"send_object: current rank={self.rank}, dst_pp_rank_in_group={dst_pp_rank_in_group}")
+        logger.info(f"send_object: global rank={self.rank}, rank in pp group={self.rank_in_group}, dst_pp_rank_in_group={dst_pp_rank_in_group}")
 
         # 텐서 전송 (전체, 슬라이싱 없음) (Device 그룹, NCCL 활용)
         # torch.distributed.send의 dst 파라미터는 *글로벌 랭크*입니다.
@@ -699,7 +699,7 @@ class GroupCoordinator:
             # 전체 텐서 전송
             torch.distributed.send(tensor, dst=dst_global_rank, group=self.device_group)
         
-        logger.debug(f"send tensor: current rank={self.rank}, dst_global_rank={dst_global_rank}")
+        logger.info(f"send tensor: global rank={self.rank}, dst_global_rank={dst_global_rank}, pp group={self.ranks}")
 
 
     def recv_full_tensor_and_broadcast(self, 
@@ -726,7 +726,7 @@ class GroupCoordinator:
             # 메타데이터 수신 (기존 recv_object 사용, CPU 그룹 활용)
             # recv_object의 src 파라미터는 *그룹 내* 로컬 랭크입니다.
             metadata_list = self.recv_object(src=src_pp_rank_in_group)
-            logger.debug(f"recv_object: current rank={self.rank}, src_pp_rank_in_group={src_pp_rank_in_group}")
+            logger.info(f"recv_object: global rank={self.rank}, rank in pp group={self.rank_in_group}, src_pp_rank_in_group={src_pp_rank_in_group}, pp group={self.ranks}")
 
             # 텐서 수신 (전체, 슬라이싱 없음) (Device 그룹, NCCL 활용)
             # torch.distributed.recv의 src 파라미터는 *글로벌 랭크*입니다.
@@ -755,7 +755,7 @@ class GroupCoordinator:
                 else:
                     received_tensor_dict[key] = value
             
-            logger.debug(f"recv tensor: current rank={self.rank}, src_global_rank={src_global_rank}")
+            logger.info(f"recv tensor: global rank={self.rank}, src_global_rank={src_global_rank}, pp group={self.ranks}")
             
             # 수신한 딕셔너리를 TP 그룹에 broadcast
             # broadcast_tensor_dict의 src 파라미터는 *TP 그룹 내* 랭크입니다.
@@ -764,7 +764,7 @@ class GroupCoordinator:
                 # broadcast_tensor_dict는 드라이버가 dict를 제공하고, 나머지는 None을 제공해야 함
                 # broadcast_tensor_dict 내부에서 device 종류에 따라 적절한 그룹 사용
                 tp_group.broadcast_tensor_dict(received_tensor_dict, src=0)
-            logger.debug(f"broadcast tensor: current rank={self.rank}, src=0")
+            logger.info(f"put broadcast tensor: global rank={self.rank}, rank in tp group={tp_group.rank_in_group}, src=0, tp group={tp_group.ranks}")
             
             # 드라이버는 수신하고 broadcast한 dict를 반환
             return received_tensor_dict
@@ -777,7 +777,7 @@ class GroupCoordinator:
             # 소스가 아닌 랭크는 tensor_dict로 None 전달.
             # src=0은 데이터가 드라이버(TP 랭크 0)로부터 온다는 것을 나타냅니다.
             if tp_group.world_size > 1:
-                 # broadcast_tensor_dict 내부에서 device 종류에 따라 적절한 그룹 사용
+                logger.info(f"get broadcast tensor: global rank={self.rank}, rank in tp group={tp_group.rank_in_group}, src=0, tp group={tp_group.ranks}")
                 received_tensor_dict = tp_group.broadcast_tensor_dict(None, src=0)
             else:
                 # TP 그룹 크기가 1인 non-driver는 이론적으로 존재하지 않음 (방어적 코딩)

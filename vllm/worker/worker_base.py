@@ -410,6 +410,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         orig_model_execute_time = 0.0
         if not get_pp_group().is_first_rank:
             # 기존 코드
+            # logger.debug(f"call recv_tensor_dict : rank {get_pp_group().rank} pp_group={get_pp_group().ranks}")
             # intermediate_tensors = IntermediateTensors(
             #     get_pp_group().recv_tensor_dict(
             #         all_gather_group=get_tp_group()))
@@ -417,6 +418,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             # 새 코드
             tp_group = get_tp_group()
             pp_group = get_pp_group()
+            logger.info(f"call recv_full_tensor_and_broadcast : global rank={pp_group.rank}, rank in pp group={pp_group.rank_in_group}, pp_group={pp_group.ranks}, tp_group={tp_group.ranks}")
             intermediate_tensors = IntermediateTensors(
                 pp_group.recv_full_tensor_and_broadcast(
                     self.is_driver_worker, tp_group))
@@ -446,10 +448,12 @@ class LocalOrDistributedWorkerBase(WorkerBase):
                     model_execute_time + orig_model_execute_time)
             
             # 기존 코드
+            # logger.debug(f"call send_tensor_dict : rank {get_pp_group().rank} group={get_pp_group().ranks}")
             # get_pp_group().send_tensor_dict(output.tensors,
             #                                 all_gather_group=get_tp_group())
             
             # 통신 방법 변경 코드
+            logger.info(f"call send_full_tensor_and_broadcast : global rank={get_pp_group().rank}, rank in pp group={get_pp_group().rank_in_group}, pp_group={get_pp_group().ranks}, tp_group={get_tp_group().ranks}")
             pp_group = get_pp_group()
             pp_group.send_full_tensor_and_broadcast(output.tensors, self.is_driver_worker)
             
