@@ -409,11 +409,21 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         intermediate_tensors = None
         orig_model_execute_time = 0.0
         if not get_pp_group().is_first_rank:
+            # 기존 코드
+            # intermediate_tensors = IntermediateTensors(
+            #     get_pp_group().recv_tensor_dict(
+            #         all_gather_group=get_tp_group()))
+            
+            # 새 코드
+            tp_group = get_tp_group()
+            pp_group = get_pp_group()
             intermediate_tensors = IntermediateTensors(
-                get_pp_group().recv_tensor_dict(
-                    all_gather_group=get_tp_group()))
+                pp_group.recv_full_tensor_and_broadcast(
+                    self.is_driver_worker, tp_group))
+
             if (self.observability_config is not None
-                    and self.observability_config.collect_model_execute_time):
+                    and self.observability_config.collect_model_execute_time
+                    and intermediate_tensors is not None): # 실제 텐서 수신 여부 확인
                 orig_model_execute_time = intermediate_tensors.tensors.get(
                     "model_execute_time", torch.tensor(0)).item()
 
@@ -428,14 +438,21 @@ class LocalOrDistributedWorkerBase(WorkerBase):
 
         model_execute_time = time.perf_counter() - start_time
         if not get_pp_group().is_last_rank:
-            # output is IntermediateTensors
+            # output은 IntermediateTensors
             assert isinstance(output, IntermediateTensors)
             if (self.observability_config is not None
                     and self.observability_config.collect_model_execute_time):
                 output.tensors["model_execute_time"] = torch.tensor(
                     model_execute_time + orig_model_execute_time)
-            get_pp_group().send_tensor_dict(output.tensors,
-                                            all_gather_group=get_tp_group())
+            
+            # 기존 코드
+            # get_pp_group().send_tensor_dict(output.tensors,
+            #                                 all_gather_group=get_tp_group())
+            
+            # 통신 방법 변경 코드
+            pp_group = get_pp_group()
+            pp_group.send_full_tensor_and_broadcast(output.tensors, self.is_driver_worker)
+            
             return [None]
         if (self.observability_config is not None
                 and self.observability_config.collect_model_execute_time
