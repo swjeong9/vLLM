@@ -393,6 +393,20 @@ class RayDistributedExecutor(DistributedExecutorBase):
         all_kwargs = []
         for rank, (node_id, _) in enumerate(worker_node_and_gpu_ids):
             local_rank = node_workers[node_id].index(rank)
+
+            is_driver_worker = (not self.parallel_config) # 병렬 처리를 하지 않거나
+            # 현재 아직 워커를 초기화 한 상태가 아니기 때문에, parallel_config 의 global rank 가
+            # 초기화 되지 않아서 이렇게 직접 driver worker 인지를 확인해 주어야 한다.
+            # 그렇지 않고 parallel_config 내부 방식을 사용하면 모든 워커가 자신이 driver 라고 판단한다.
+            if not is_driver_worker: # parallel_config 가 있을 경우
+                tp_rank = rank
+                for stage in range(len(self.parallel_config.parallel_strategy)):
+                    stage_size = self.parallel_config.parallel_strategy[stage]
+                    if tp_rank < stage_size:
+                        break
+                    tp_rank -= stage_size
+                is_driver_worker = (tp_rank == 0)
+
             kwargs = dict(
                 vllm_config=self.vllm_config,
                 local_rank=local_rank,
@@ -400,8 +414,7 @@ class RayDistributedExecutor(DistributedExecutorBase):
                 distributed_init_method=distributed_init_method,
                 # is_driver_worker=(not self.parallel_config)
                 # or (rank % self.parallel_config.tensor_parallel_size == 0),
-                is_driver_worker=(not self.parallel_config) # 병렬 처리를 하지 않거나
-                or (self.parallel_config.tensor_parallel_rank == 0) # 해당 Stage 의 첫번째 Shard 가 driver가 됨
+                is_driver_worker=is_driver_worker
             )
             all_kwargs.append(kwargs)
         self._run_workers("init_worker", all_kwargs)
@@ -424,6 +437,10 @@ class RayDistributedExecutor(DistributedExecutorBase):
                     assert pp_rank < len(self.pp_tp_workers)
                     self.pp_tp_workers[pp_rank].append(self.workers[rank])
 
+
+        # TODO(정승우)
+        # 이후에 driver / non-driver worker list 를 적절하게 채워주어야 한다.
+        # 지금은 균일한 TP 분할 밖에 정상 작동하지 않는다.
         # This is the list of workers that are rank 0 of each TP group EXCEPT
         # global rank 0. These are the workers that will broadcast to the
         # rest of the workers.
