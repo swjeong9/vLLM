@@ -398,8 +398,10 @@ class RayDistributedExecutor(DistributedExecutorBase):
                 local_rank=local_rank,
                 rank=rank,
                 distributed_init_method=distributed_init_method,
-                is_driver_worker=(not self.parallel_config)
-                or (rank % self.parallel_config.tensor_parallel_size == 0),
+                # is_driver_worker=(not self.parallel_config)
+                # or (rank % self.parallel_config.tensor_parallel_size == 0),
+                is_driver_worker=(not self.parallel_config) # 병렬 처리를 하지 않거나
+                or (self.parallel_config.tensor_parallel_rank == 0) # 해당 Stage 의 첫번째 Shard 가 driver가 됨
             )
             all_kwargs.append(kwargs)
         self._run_workers("init_worker", all_kwargs)

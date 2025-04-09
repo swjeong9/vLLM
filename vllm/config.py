@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from importlib.util import find_spec
 from pathlib import Path
-from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Final, Literal,
+from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Final, List, Literal,
                     Optional, Protocol, Union)
 
 import torch
@@ -754,12 +754,14 @@ class ModelConfig:
     ) -> None:
         total_num_attention_heads = getattr(self.hf_text_config,
                                             "num_attention_heads", 0)
-        tensor_parallel_size = parallel_config.tensor_parallel_size
-        if total_num_attention_heads % tensor_parallel_size != 0:
-            raise ValueError(
-                f"Total number of attention heads ({total_num_attention_heads})"
-                " must be divisible by tensor parallel size "
-                f"({tensor_parallel_size}).")
+        # 이제 parallel_strategy 안에 있는 tensor_parallel_size 모두를 확인해야함
+        # tensor_parallel_size = parallel_config.tensor_parallel_size
+        for tp_size in parallel_config.parallel_strategy:
+            if total_num_attention_heads % tp_size != 0:
+                raise ValueError(
+                    f"Total number of attention heads ({total_num_attention_heads})"
+                    " must be divisible by tensor parallel size "
+                    f"({tp_size}) in stage ({parallel_config.pipeline_parallel_rank}).")
 
         if parallel_config.enable_expert_parallel:
             self._verify_with_expert_parallelism()
@@ -909,9 +911,10 @@ class ModelConfig:
         else:
             total_num_hidden_layers = getattr(self.hf_text_config,
                                               "num_hidden_layers", 0)
-        # the layout order is: DP x PP x TP
-        pp_rank = (parallel_config.rank // parallel_config.tensor_parallel_size
-                   ) % parallel_config.pipeline_parallel_size
+        # the layout order is: DP x PP x TP <- 더이상 아님
+        # pp_rank = (parallel_config.rank // parallel_config.tensor_parallel_size
+        #            ) % parallel_config.pipeline_parallel_size
+        pp_rank = parallel_config.pipeline_parallel_rank # 새로 만든 property 로 대체
         pp_size = parallel_config.pipeline_parallel_size
         start, end = get_pp_indices(total_num_hidden_layers, pp_rank, pp_size)
         return start, end
@@ -1353,9 +1356,9 @@ class LoadConfig:
 @dataclass
 class ParallelConfig:
     """Configuration for the distributed execution."""
-
-    pipeline_parallel_size: int = 1  # Number of pipeline parallel groups.
-    tensor_parallel_size: int = 1  # Number of tensor parallel groups.
+    parallel_strategy: List[int] = field(default_factory=lambda: [1]) # 추가 한 코드
+    # 이제 tensor_parallel_size 는 property 로 변경할것
+    # tensor_parallel_size: int = 1  # Number of tensor parallel groups.
     data_parallel_size: int = 1  # Number of data parallel groups.
     data_parallel_rank: int = 0  # Rank of the data parallel group.
     # IP of the data parallel master.
@@ -1396,6 +1399,7 @@ class ParallelConfig:
     sd_worker_cls: str = "auto"
     worker_extension_cls: str = ""
 
+    pipeline_parallel_size: int = field(init=False)
     # world_size is TPxPP, it affects the number of workers we create.
     world_size: int = field(init=False)
     # world_size_across_dp is TPxPPxDP, it is the size of the world
@@ -1454,13 +1458,15 @@ class ParallelConfig:
         the final hidden states.
         """
         factors: list[Any] = []
-        factors.append(self.pipeline_parallel_size)
-        factors.append(self.tensor_parallel_size)
+        # 기존 hash 계산 factor 를 parallel_strategy 로 변경
+        # factors.append(self.pipeline_parallel_size)
+        # factors.append(self.tensor_parallel_size)
+        factors = self.parallel_strategy
         return hashlib.sha256(str(factors).encode()).hexdigest()
 
     def __post_init__(self) -> None:
-        self.world_size = self.pipeline_parallel_size * \
-            self.tensor_parallel_size
+        self.world_size = sum(self.parallel_strategy) # world_size 계산 방식 수정
+        self.pipeline_parallel_size = len(self.parallel_strategy) # 이제 더이상 pipeline_parallel_size 를 입력받지 않고 내부적으로 계산됨
 
         self.data_parallel_size = envs.VLLM_DP_SIZE
         self.data_parallel_rank = envs.VLLM_DP_RANK
@@ -1525,6 +1531,39 @@ class ParallelConfig:
         return self.distributed_executor_backend == "ray" or (
             isinstance(self.distributed_executor_backend, type)
             and self.distributed_executor_backend.uses_ray)
+    
+    # 기존 tensor_parallel_size 를 property 로 대체하자
+    @property
+    def tensor_parallel_size(self) -> int:
+        rank = self.rank
+        for stage in range(len(self.parallel_strategy)):
+            stage_size = self.parallel_strategy[stage]
+            if rank < stage_size:
+                return stage_size
+            rank -= stage_size
+        raise ValueError(f"Invalid rank: {rank}")
+    
+    # 이제 pipeline parallel rank 도 반환해줄 수 있어야 겠다
+    @property
+    def pipeline_parallel_rank(self) -> int:
+        rank = self.rank
+        for stage in range(len(self.parallel_strategy)):
+            stage_size = self.parallel_strategy[stage]
+            if rank < stage_size:
+                return stage
+            rank -= stage_size
+        raise ValueError(f"Invalid rank: {rank}")
+    
+    # tensor parallel rank 도 반환해주는 property 도 추가해보자 그냥
+    @property
+    def tensor_parallel_rank(self) -> int:
+        rank = self.rank
+        for stage in range(len(self.parallel_strategy)):
+            stage_size = self.parallel_strategy[stage]
+            if rank < stage_size:
+                return rank
+            rank -= stage_size
+        raise ValueError(f"Invalid rank: {rank}")
 
     def _verify_args(self) -> None:
         # Lazy import to avoid circular import

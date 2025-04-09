@@ -4,7 +4,7 @@ import argparse
 import dataclasses
 import json
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import (TYPE_CHECKING, Any, Dict, List, Literal, Mapping, Optional,
                     Tuple, Type, Union, cast, get_args)
 
@@ -113,7 +113,8 @@ class EngineArgs:
     distributed_executor_backend: Optional[Union[str,
                                                  Type[ExecutorBase]]] = None
     # number of P/D disaggregation (or other disaggregation) workers
-    pipeline_parallel_size: int = 1
+    parallel_strategy: List[int] = field(default_factory=lambda: [1]) # 추가 한 코드
+    pipeline_parallel_size: int = 1 # 원래 주석화 해야 하나 오류의 가능성으로 일단 놔둔다
     tensor_parallel_size: int = 1
     enable_expert_parallel: bool = False
     max_parallel_loading_workers: Optional[int] = None
@@ -425,16 +426,22 @@ class EngineArgs:
             'to "ray" if Ray is installed and fail otherwise. Note that tpu '
             'only supports Ray for distributed inference.')
 
-        parser.add_argument('--pipeline-parallel-size',
-                            '-pp',
-                            type=int,
-                            default=EngineArgs.pipeline_parallel_size,
-                            help='Number of pipeline stages.')
-        parser.add_argument('--tensor-parallel-size',
-                            '-tp',
-                            type=int,
-                            default=EngineArgs.tensor_parallel_size,
-                            help='Number of tensor parallel replicas.')
+        # parallel strategy 추가
+        parser.add_argument('--parallel-strategy',
+                            type=str,
+                            default=EngineArgs.parallel_strategy,
+                            help='Parallel strategy for the model. '
+                            'For example, ``[4, 2]`` means stage 0 consists of 4 shards and stage 1 consists of 2 shards.')
+        # parser.add_argument('--pipeline-parallel-size',
+        #                     '-pp',
+        #                     type=int,
+        #                     default=EngineArgs.pipeline_parallel_size,
+        #                     help='Number of pipeline stages.')
+        # parser.add_argument('--tensor-parallel-size',
+        #                     '-tp',
+        #                     type=int,
+        #                     default=EngineArgs.tensor_parallel_size,
+        #                     help='Number of tensor parallel replicas.')
         parser.add_argument(
             '--enable-expert-parallel',
             action='store_true',
@@ -1241,8 +1248,10 @@ class EngineArgs:
             calculate_kv_scales=self.calculate_kv_scales,
         )
         parallel_config = ParallelConfig(
-            pipeline_parallel_size=self.pipeline_parallel_size,
-            tensor_parallel_size=self.tensor_parallel_size,
+            # 더이상 직접 pp 와 tp 를 주지 않을 것
+            # pipeline_parallel_size=self.pipeline_parallel_size,
+            # tensor_parallel_size=self.tensor_parallel_size,
+            parallel_strategy=self.parallel_strategy, # 이제 parallel_strategy 를 줄 것
             enable_expert_parallel=self.enable_expert_parallel,
             max_parallel_loading_workers=self.max_parallel_loading_workers,
             disable_custom_all_reduce=self.disable_custom_all_reduce,
