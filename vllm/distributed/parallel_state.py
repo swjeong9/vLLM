@@ -764,14 +764,13 @@ class GroupCoordinator:
                 # broadcast_tensor_dict는 드라이버가 dict를 제공하고, 나머지는 None을 제공해야 함
                 # broadcast_tensor_dict 내부에서 device 종류에 따라 적절한 그룹 사용
                 tp_group.broadcast_tensor_dict(received_tensor_dict, src=0)
-            logger.info(f"put broadcast tensor: global rank={self.rank}, rank in tp group={tp_group.rank_in_group}, src=0, tp group={tp_group.ranks}")
+                logger.info(f"put broadcast tensor: global rank={self.rank}, rank in tp group={tp_group.rank_in_group}, src=0, tp group={tp_group.ranks}")
             
             # 드라이버는 수신하고 broadcast한 dict를 반환
             return received_tensor_dict
 
         else:
             # === 논-드라이버 워커 로직 ===
-            
             # TP 그룹 드라이버로부터 broadcast 수신
             # TP 그룹 내 모든 워커는 broadcast에 참여해야 합니다.
             # 소스가 아닌 랭크는 tensor_dict로 None 전달.
@@ -781,7 +780,7 @@ class GroupCoordinator:
                 received_tensor_dict = tp_group.broadcast_tensor_dict(None, src=0)
             else:
                 # TP 그룹 크기가 1인 non-driver는 이론적으로 존재하지 않음 (방어적 코딩)
-                logger.warning("recv_full_tensor_and_broadcast가 TP 그룹 크기 1인 non-driver에서 호출됨?")
+                logger.warning("recv_full_tensor_and_broadcast가 TP 그룹 크기 1인 non-driver에서 호출됨")
                 return None 
 
             return received_tensor_dict
