@@ -669,30 +669,27 @@ class GroupCoordinator:
                                        tensor_dict: Dict[str, Union[torch.Tensor, Any]], 
                                        is_driver: bool):
         """ 드라이버 워커가 다음 PP 스테이지 드라이버에게 전체 텐서 dict를 보냅니다. """
-        # 드라이버 워커 (TP 랭크 0)만 스테이지 간 데이터를 전송합니다.
+        # send 로직은 driver worker 가 아니면 아무 로직을 수행하지 않음
         if not is_driver:
             return
 
         if not torch.distributed.is_initialized() or self.world_size == 1:
-            # 분산 환경이 아니거나 PP 그룹 크기가 1이면 전송할 필요 없음
             return
 
         # PP 그룹 내 다음 랭크 계산
         dst_pp_rank_in_group = (self.rank_in_group + 1) % self.world_size
         
-        # 목적지 드라이버의 *글로벌* 랭크를 얻습니다. (이 부분은 여전히 PP 그룹 내 랭크를 사용해야 함)
-        # GroupCoordinator의 ranks 리스트는 해당 그룹에 속한 글로벌 랭크 리스트임
         dst_global_rank = self.ranks[dst_pp_rank_in_group]
         
         metadata_list, tensor_list = _split_tensor_dict(tensor_dict)
 
         # 메타데이터 전송 (기존 send_object 사용, CPU 그룹 활용)
-        # send_object의 dst 파라미터는 *그룹 내* 로컬 랭크입니다.
+        # send_object의 dst 파라미터는 그룹 내 local rank.
         self.send_object(metadata_list, dst=dst_pp_rank_in_group)
         logger.info(f"send_object: global rank={self.rank}, rank in pp group={self.rank_in_group}, dst_pp_rank_in_group={dst_pp_rank_in_group}")
 
         # 텐서 전송 (전체, 슬라이싱 없음) (Device 그룹, NCCL 활용)
-        # torch.distributed.send의 dst 파라미터는 *글로벌 랭크*입니다.
+        # torch.distributed.send의 dst 파라미터는 global rank
         for tensor in tensor_list:
             if tensor.numel() == 0:
                 continue
@@ -703,87 +700,78 @@ class GroupCoordinator:
 
 
     def recv_full_tensor_and_broadcast(self, 
-                                       is_driver: bool, # 인자 이름 변경
-                                       tp_group: "GroupCoordinator"): # worker_device 인자 제거
+                                       is_driver: bool,
+                                       tp_group: "GroupCoordinator"):
         """
-        드라이버 워커는 이전 PP 스테이지 드라이버로부터 전체 텐서 dict를 받고
-        자신의 TP 그룹에 broadcast 합니다. 논-드라이버 워커는 broadcast된 데이터를 받습니다.
-        수신된 (그리고 잠재적으로 broadcast된) tensor_dict를 반환합니다.
+        Driver worker 가 이전 PP Stage 로 부터 메타데이터와 텐서를 수신하고, Non-driver worker 에게 Broadcast 후 리턴.
+        Non-Driver worker 는 Driver worker 에게 메타데이터와 텐서를 Broadcast 받고 리턴
         """
         if not torch.distributed.is_initialized() or self.world_size == 1:
-             # 분산 환경이 아니거나 PP 그룹 크기가 1이면 받을 것이 없음
-             return None # 또는 에러 발생
+             return None
 
         received_tensor_dict = None
 
-        if is_driver:
-            # PP 그룹 내 이전 랭크 계산
-            src_pp_rank_in_group = (self.rank_in_group - 1) % self.world_size
-
-            # 소스 드라이버의 *글로벌* 랭크를 얻습니다.
-            src_global_rank = self.ranks[src_pp_rank_in_group]
-            
-            # 메타데이터 수신 (기존 recv_object 사용, CPU 그룹 활용)
-            # recv_object의 src 파라미터는 *그룹 내* 로컬 랭크입니다.
-            metadata_list = self.recv_object(src=src_pp_rank_in_group)
-            logger.info(f"recv_object: global rank={self.rank}, rank in pp group={self.rank_in_group}, src_pp_rank_in_group={src_pp_rank_in_group}, pp group={self.ranks}")
-
-            # 텐서 수신 (전체, 슬라이싱 없음) (Device 그룹, NCCL 활용)
-            # torch.distributed.recv의 src 파라미터는 *글로벌 랭크*입니다.
-            received_tensor_dict = {}
-            for key, value in metadata_list:
-                if isinstance(value, TensorMetadata):
-                    # 워커의 device 정보 대신 metadata의 device 정보 사용
-                    tensor = torch.empty(value.size, dtype=value.dtype, device=value.device)
-                    if tensor.numel() == 0:
-                        received_tensor_dict[key] = tensor
-                        continue
-                    # NCCL 백엔드는 GPU 텐서만 지원하므로, device가 CPU일 경우 에러 발생 가능성 있음
-                    # 단, vLLM의 PP는 일반적으로 GPU간 통신이므로 문제가 없을 것으로 예상됨
-                    if not tensor.is_cuda and torch.distributed.get_backend(self.device_group) == "nccl":
-                         # CPU 텐서를 NCCL 그룹으로 받으려 하면 에러 발생.
-                         # Gloo 백엔드를 사용해야 하지만, PP에서는 보통 NCCL 사용.
-                         # CPU 텐서가 PP를 통해 전달되는 경우가 있는지 확인 필요.
-                         # 일단 경고 로깅 추가 (필요시 에러 처리 강화)
-                         logger.warning(f"PP 그룹({self.unique_name})에서 CPU 텐서({key}) 수신 시도. "
-                                        f"Device 그룹 백엔드가 NCCL이면 에러 발생 가능성 있음.")
-                         # CPU 텐서 수신을 위해 CPU 그룹 사용 (Gloo)
-                         torch.distributed.recv(tensor, src=src_global_rank, group=self.cpu_group)
-                    else:
-                         torch.distributed.recv(tensor, src=src_global_rank, group=self.device_group)
-                    received_tensor_dict[key] = tensor
-                else:
-                    received_tensor_dict[key] = value
-            
-            logger.info(f"recv tensor: global rank={self.rank}, src_global_rank={src_global_rank}, pp group={self.ranks}")
-            
-            # 수신한 딕셔너리를 TP 그룹에 broadcast
-            # broadcast_tensor_dict의 src 파라미터는 *TP 그룹 내* 랭크입니다.
-            # 드라이버는 TP 랭크 0입니다.
-            if tp_group.world_size > 1:
-                # broadcast_tensor_dict는 드라이버가 dict를 제공하고, 나머지는 None을 제공해야 함
-                # broadcast_tensor_dict 내부에서 device 종류에 따라 적절한 그룹 사용
-                tp_group.broadcast_tensor_dict(received_tensor_dict, src=0)
-                logger.info(f"put broadcast tensor: global rank={self.rank}, rank in tp group={tp_group.rank_in_group}, src=0, tp group={tp_group.ranks}")
-            
-            # 드라이버는 수신하고 broadcast한 dict를 반환
-            return received_tensor_dict
-
-        else:
-            # === 논-드라이버 워커 로직 ===
-            # TP 그룹 드라이버로부터 broadcast 수신
-            # TP 그룹 내 모든 워커는 broadcast에 참여해야 합니다.
-            # 소스가 아닌 랭크는 tensor_dict로 None 전달.
-            # src=0은 데이터가 드라이버(TP 랭크 0)로부터 온다는 것을 나타냅니다.
+        if not is_driver:
+            # non-driver worker 는 driver worker 로부터 broadcast 수신 후 리턴
             if tp_group.world_size > 1:
                 logger.info(f"get broadcast tensor: global rank={self.rank}, rank in tp group={tp_group.rank_in_group}, src=0, tp group={tp_group.ranks}")
                 received_tensor_dict = tp_group.broadcast_tensor_dict(None, src=0)
             else:
-                # TP 그룹 크기가 1인 non-driver는 이론적으로 존재하지 않음 (방어적 코딩)
-                logger.warning("recv_full_tensor_and_broadcast가 TP 그룹 크기 1인 non-driver에서 호출됨")
-                return None 
-
+                raise ValueError("TP 그룹 크기가 1인 non-driver는 이론적으로 존재하지 않음")
             return received_tensor_dict
+        
+        # === DRIVER WORKER LOGIC START ===
+        # driver worker 는 이전 PP 스테이지의 driver worker 로부터 메타데이터와 텐서를 수신
+        # 이후 수신한 메타데이터와 텐서를 자신의 TP 그룹에 broadcast
+        src_pp_rank_in_group = (self.rank_in_group - 1) % self.world_size
+
+        src_global_rank = self.ranks[src_pp_rank_in_group]
+        
+        # 메타데이터 수신 (기존 recv_object 사용, CPU 그룹 활용)
+        # recv_object의 src 파라미터는 그룹 내 local rank.
+        # 해당 recv_object 내부에서 알아서 global rank로 변환해서 수신함.
+        metadata_list = self.recv_object(src=src_pp_rank_in_group)
+        logger.info(f"recv_object: global rank={self.rank}, rank in pp group={self.rank_in_group}, src_pp_rank_in_group={src_pp_rank_in_group}, pp group={self.ranks}")
+
+        # 텐서 수신 (전체, 슬라이싱 없음) (Device 그룹, NCCL 활용)
+        # torch.distributed.recv의 src 파라미터는 global rank
+        received_tensor_dict = {}
+        for key, value in metadata_list:
+            if isinstance(value, TensorMetadata):
+                # 워커의 device 정보 대신 metadata의 device 정보 사용
+                tensor = torch.empty(value.size, dtype=value.dtype, device=value.device)
+                if tensor.numel() == 0:
+                    received_tensor_dict[key] = tensor
+                    continue
+                if not tensor.is_cuda and torch.distributed.get_backend(self.device_group) == "nccl":
+                        # CPU 텐서를 NCCL 그룹으로 받으려 하면 에러 발생.
+                        # Gloo 백엔드를 사용해야 하지만, PP에서는 보통 NCCL 사용.
+                        # CPU 텐서가 PP를 통해 전달되는 경우가 있는지 확인 필요.
+                        # 일단 경고 로깅 추가 (필요시 에러 처리 강화)
+                        logger.warning(f"PP 그룹({self.unique_name})에서 CPU 텐서({key}) 수신 시도. device group backend : {torch.distributed.get_backend(self.device_group)}")
+                        # CPU 텐서 수신을 위해 CPU 그룹 사용 (Gloo)
+                        torch.distributed.recv(tensor, src=src_global_rank, group=self.cpu_group)
+                else:
+                        torch.distributed.recv(tensor, src=src_global_rank, group=self.device_group)
+                received_tensor_dict[key] = tensor
+            else:
+                received_tensor_dict[key] = value
+        
+        logger.info(f"recv tensor: global rank={self.rank}, src_global_rank={src_global_rank}, pp group={self.ranks}")
+        
+        # 수신한 딕셔너리를 TP 그룹에 broadcast
+        # broadcast_tensor_dict의 src 파라미터는 TP Group 내 rank
+        # 드라이버는 TP 랭크 0
+        if tp_group.world_size > 1:
+            # broadcast_tensor_dict는 드라이버가 dict를 제공하고, 나머지는 None을 제공해야 함
+            # 즉, 송신 : tensor dict, 수신 : None 을 입력으로 넣어줘야 함
+            tp_group.broadcast_tensor_dict(received_tensor_dict, src=0)
+            logger.info(f"put broadcast tensor: global rank={self.rank}, rank in tp group={tp_group.rank_in_group}, src=0, tp group={tp_group.ranks}")
+        
+        # 여기까지 올바르게 도착했다면 received_tensor_dict 는 None 이면 안됨
+        assert received_tensor_dict is not None, "received_tensor_dict is None"
+
+        return received_tensor_dict
 
     def barrier(self):
         """Barrier synchronization among the group.
