@@ -1553,17 +1553,6 @@ class ParallelConfig:
                 return stage
             rank -= stage_size
         raise ValueError(f"Invalid rank: {rank}")
-    
-    # tensor parallel rank 도 반환해주는 property 도 추가해보자 그냥
-    @property
-    def tensor_parallel_rank(self) -> int:
-        rank = self.rank
-        for stage in range(len(self.parallel_strategy)):
-            stage_size = self.parallel_strategy[stage]
-            if rank < stage_size:
-                return rank
-            rank -= stage_size
-        raise ValueError(f"Invalid rank: {rank}")
 
     def _verify_args(self) -> None:
         # Lazy import to avoid circular import
