@@ -24,6 +24,7 @@ from vllm.utils import (enable_trace_function_call_for_thread,
 from vllm.worker.model_runner_base import (BroadcastableModelInput,
                                            ModelRunnerBase,
                                            ModelRunnerInputBase)
+from vllm.distributed.parallel_state import is_first_stage, is_last_stage
 
 logger = init_logger(__name__)
 
@@ -408,9 +409,12 @@ class LocalOrDistributedWorkerBase(WorkerBase):
 
         intermediate_tensors = None
         orig_model_execute_time = 0.0
-        if not get_pp_group().is_first_rank:
+
+        # if not get_pp_group().is_first_rank:
+        # 잠깐 디버깅용
+        logger.info(f"My global rank={get_pp_group().rank}, is_first_stage(get_pp_group().rank)={is_first_stage(get_pp_group().rank)}")
+        if not is_first_stage(get_pp_group().rank):
             # 기존 코드
-            # logger.debug(f"call recv_tensor_dict : rank {get_pp_group().rank} pp_group={get_pp_group().ranks}")
             # intermediate_tensors = IntermediateTensors(
             #     get_pp_group().recv_tensor_dict(
             #         all_gather_group=get_tp_group()))
@@ -439,7 +443,8 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         )
 
         model_execute_time = time.perf_counter() - start_time
-        if not get_pp_group().is_last_rank:
+        # if not get_pp_group().is_last_rank:
+        if not is_last_stage(get_pp_group().rank):
             # output은 IntermediateTensors
             assert isinstance(output, IntermediateTensors)
             if (self.observability_config is not None

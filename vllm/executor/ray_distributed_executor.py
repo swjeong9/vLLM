@@ -424,6 +424,7 @@ class RayDistributedExecutor(DistributedExecutorBase):
                           max_concurrent_workers=self.parallel_config.
                           max_parallel_loading_workers)
 
+        # 현재 use_ray_spmd_worker 활성화 하면 오류 날 것
         if self.use_ray_spmd_worker:
             for pp_rank in range(self.parallel_config.pipeline_parallel_size):
                 self.pp_tp_workers.append([])
@@ -438,9 +439,7 @@ class RayDistributedExecutor(DistributedExecutorBase):
                     self.pp_tp_workers[pp_rank].append(self.workers[rank])
 
 
-        # TODO(정승우)
-        # 이후에 driver / non-driver worker list 를 적절하게 채워주어야 한다.
-        # 지금은 균일한 TP 분할 밖에 정상 작동하지 않는다.
+
         # This is the list of workers that are rank 0 of each TP group EXCEPT
         # global rank 0. These are the workers that will broadcast to the
         # rest of the workers.
@@ -450,14 +449,34 @@ class RayDistributedExecutor(DistributedExecutorBase):
         # broadcasted to.
         self.non_driver_workers: List[RayWorkerWrapper] = []
 
-        # Enforce rank order for correct rank to return final output.
+        # 원래 vLLM 코드
+        # # Enforce rank order for correct rank to return final output.
+        # for index, worker in enumerate(self.workers):
+        #     # The driver worker is rank 0 and not in self.workers.
+        #     rank = index + 1
+        #     if rank % self.parallel_config.tensor_parallel_size == 0:
+        #         self.tp_driver_workers.append(worker)
+        #     else:
+        #         self.non_driver_workers.append(worker)
+
+        # 수정된 코드 (Uneven TP / PP Partitioning)
+        # driver / non-driver worker list 를 적절하게 채워주어야 한다.
+        driver_global_ranks = [0]
+        for tp_size in self.parallel_config.parallel_strategy:
+            driver_global_ranks.append(driver_global_ranks[-1] + tp_size)
+        # 마지막 인자는 빼주어야 함
+        driver_global_ranks.pop()
+
+        logger.info(f"driver_global_ranks: {driver_global_ranks}")
+
         for index, worker in enumerate(self.workers):
-            # The driver worker is rank 0 and not in self.workers.
+            # rank 0 의 driver worker 는 self.workers 에 없음 (따로 미리 처리되었음)
             rank = index + 1
-            if rank % self.parallel_config.tensor_parallel_size == 0:
+            if rank in driver_global_ranks:
                 self.tp_driver_workers.append(worker)
             else:
                 self.non_driver_workers.append(worker)
+
 
     def _driver_execute_model(
         self, execute_model_req: Optional[ExecuteModelRequest]

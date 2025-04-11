@@ -12,6 +12,7 @@ from vllm.config import VllmConfig
 from vllm.device_allocator.cumem import CuMemAllocator
 from vllm.distributed import (ensure_kv_transfer_initialized,
                               ensure_model_parallel_initialized,
+                              ensure_hetero_model_parallel_initialized,
                               init_distributed_environment,
                               set_custom_all_reduce)
 from vllm.logger import init_logger
@@ -502,10 +503,14 @@ def init_worker_distributed_environment(
     parallel_config = vllm_config.parallel_config
     set_custom_all_reduce(not parallel_config.disable_custom_all_reduce)
 
+    # 여기서 Global Group 을 설정한다. 병렬화 전략은 아직 필요 없음
     init_distributed_environment(parallel_config.world_size, rank,
                                  distributed_init_method, local_rank)
-    ensure_model_parallel_initialized(parallel_config.tensor_parallel_size,
-                                      parallel_config.pipeline_parallel_size)
+    # 해당 함수에서 model parallel group 을 초기화 한다.
+    # parallel_state.py 에 새로운 함수를 추가하여 대체한다.
+    # ensure_model_parallel_initialized(parallel_config.tensor_parallel_size,
+    #                                   parallel_config.pipeline_parallel_size)
+    ensure_hetero_model_parallel_initialized(parallel_config.parallel_strategy)
 
     ensure_kv_transfer_initialized(vllm_config)
 

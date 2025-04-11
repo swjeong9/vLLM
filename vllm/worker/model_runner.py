@@ -59,6 +59,8 @@ from vllm.worker.model_runner_base import (
     _init_attn_metadata_from_tensor_dict,
     _init_sampling_metadata_from_tensor_dict)
 
+from vllm.distributed.parallel_state import is_first_stage, is_last_stage
+
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionBackend
 
@@ -1340,7 +1342,8 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
             model_input = self.prepare_model_input(
                 seqs, finished_requests_ids=finished_requests_ids)
             intermediate_tensors = None
-            if not get_pp_group().is_first_rank:
+            # if not get_pp_group().is_first_rank:
+            if not is_first_stage(get_pp_group().rank):
                 intermediate_tensors = \
                     self.model.make_empty_intermediate_tensors(
                     batch_size=batch_size,
@@ -1473,7 +1476,8 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
                 device=self.device)
 
         intermediate_inputs = None
-        if not get_pp_group().is_first_rank:
+        # if not get_pp_group().is_first_rank:
+        if not is_first_stage(get_pp_group().rank):
             intermediate_inputs = self.model.make_empty_intermediate_tensors(
                 batch_size=max_batch_size,
                 dtype=self.model_config.dtype,
@@ -1635,7 +1639,8 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         """
         model_input = self._prepare_model_input_tensors(
             seq_group_metadata_list, finished_requests_ids)
-        if get_pp_group().is_last_rank:
+        # if get_pp_group().is_last_rank:
+        if is_last_stage(get_pp_group().rank):
             # Sampling metadata is only required for the final pp group
             generators = self.get_generators(finished_requests_ids)
             sampling_metadata = SamplingMetadata.prepare(
@@ -1767,7 +1772,8 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
             )
 
         # Compute the logits in the last pipeline stage.
-        if not get_pp_group().is_last_rank:
+        # if not get_pp_group().is_last_rank:
+        if not is_last_stage(get_pp_group().rank):
             if (self.is_driver_worker
                     and hidden_or_intermediate_states is not None
                     and isinstance(hidden_or_intermediate_states,
@@ -1974,7 +1980,8 @@ class CUDAGraphRunner(nn.Module):
         }
         if intermediate_inputs is not None:
             self.input_buffers.update(intermediate_inputs.tensors)
-        if get_pp_group().is_last_rank:
+        # if get_pp_group().is_last_rank:
+        if is_last_stage(get_pp_group().rank):
             self.output_buffers = {
                 "hidden_states": hidden_or_intermediate_states
             }
@@ -2028,7 +2035,8 @@ class CUDAGraphRunner(nn.Module):
         # Run the graph.
         self.graph.replay()
         # Return the output tensor.
-        if get_pp_group().is_last_rank:
+        # if get_pp_group().is_last_rank:
+        if is_last_stage(get_pp_group().rank):
             return self.output_buffers["hidden_states"]
 
         return self.output_buffers

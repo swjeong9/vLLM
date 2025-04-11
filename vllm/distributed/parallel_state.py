@@ -57,6 +57,8 @@ class GraphCaptureContext:
 
 TensorMetadata = namedtuple("TensorMetadata", ["device", "dtype", "size"])
 
+# is_first_stage 라는 property 를 만들기 위해서 parallel_strategy 를 전역으로 저장할 수 있어야 함
+ParallelStrategy: List[int] = None
 
 def _split_tensor_dict(
     tensor_dict: Dict[str, Union[torch.Tensor, Any]]
@@ -673,7 +675,11 @@ class GroupCoordinator:
         if not is_driver:
             return
 
-        if not torch.distributed.is_initialized() or self.world_size == 1:
+        if not torch.distributed.is_initialized():
+            return
+        # 기존의 방식인 self.world_size 는 non-driver 에서 제대로 작동하지 않는다.
+        # 따라서 get_pp_size() 를 사용하여 PP 그룹 크기를 확인한다.
+        if get_pp_size() == 1:
             return
 
         # PP 그룹 내 다음 랭크 계산
@@ -706,12 +712,19 @@ class GroupCoordinator:
         Driver worker 가 이전 PP Stage 로 부터 메타데이터와 텐서를 수신하고, Non-driver worker 에게 Broadcast 후 리턴.
         Non-Driver worker 는 Driver worker 에게 메타데이터와 텐서를 Broadcast 받고 리턴
         """
-        if not torch.distributed.is_initialized() or self.world_size == 1:
-             return None
+        if not torch.distributed.is_initialized():
+            logger.info(f"self.rank={self.rank}. torch.distributed.is_initialized()=False")
+            return None
+        # 기존의 방식인 self.world_size 는 non-driver 에서 제대로 작동하지 않는다.
+        # 따라서 get_pp_size() 를 사용하여 PP 그룹 크기를 확인한다.
+        if get_pp_size() == 1:
+            logger.info(f"self.rank={self.rank}. get_pp_size()=1")
+            return None
 
         received_tensor_dict = None
 
         if not is_driver:
+            logger.info(f"self.rank={self.rank}. run Non-Driver Worker Logic")
             # non-driver worker 는 driver worker 로부터 broadcast 수신 후 리턴
             if tp_group.world_size > 1:
                 logger.info(f"get broadcast tensor: global rank={self.rank}, rank in tp group={tp_group.rank_in_group}, src=0, tp group={tp_group.ranks}")
@@ -1078,6 +1091,90 @@ def initialize_model_parallel(
         _DP.rank_in_group, _PP.rank_in_group, _TP.rank_in_group)
 
 
+def initialize_hetero_model_parallel(
+    parallel_strategy: List[int],
+    backend: Optional[str] = None,
+) -> None:
+    assert torch.distributed.is_initialized()
+    world_size: int = torch.distributed.get_world_size()
+    rank = torch.distributed.get_rank()
+    backend = backend or torch.distributed.get_backend(
+        get_world_group().device_group)
+
+    from vllm.config import get_current_vllm_config
+    config = get_current_vllm_config()
+    if config is not None:
+        if config.parallel_config.world_size != world_size:
+            # 지금은 Data Parallel 을 지원하지 않을 것임
+            assert False, "Data Parallel is not supported yet"
+
+    # Global ParallelStrategy 초기화 해줌
+    global ParallelStrategy
+    ParallelStrategy = parallel_strategy
+
+    # torch.reshape 같은 것을 쓰지 않고, 직접 그룹을 할당해 줄 것임
+    group_ranks = []
+    start_rank = 0
+    for tp_group_size in parallel_strategy:
+        tp_group = list(range(start_rank, start_rank + tp_group_size))
+        group_ranks.append(tp_group)
+        start_rank += tp_group_size
+    assert start_rank == world_size, "Total number of ranks does not match"
+
+    # debugging 용
+    logger.info(f"TP Group initialization start:{group_ranks}")
+
+    # message queue broadcaster is only used in tensor model parallel group
+    global _TP
+    assert _TP is None, ("tensor model parallel group is already initialized")
+    _TP = init_model_parallel_group(group_ranks,
+                                    get_world_group().local_rank,
+                                    backend,
+                                    use_message_queue_broadcaster=True,
+                                    group_name="tp")
+
+    # driver worker 는 tp group 내에서 첫 번째 rank임
+    driver_worker_ranks = [group_ranks[x][0] for x in range(len(group_ranks))]
+    group_ranks = [[]] # driver worker 는 index 0 에만 존재 나머지는 모두 자기 자신만 이루어진 그룹
+    start_rank = 0
+    for tp_group_size in parallel_strategy:
+        for rk in range(start_rank, start_rank + tp_group_size):
+            if rk in driver_worker_ranks:
+                group_ranks[0].append(rk)
+            else:
+                group_ranks.append([rk])
+        start_rank += tp_group_size
+    assert start_rank == world_size, "Total number of ranks does not match"
+    assert len(group_ranks[0]) == len(parallel_strategy), "Driver worker ranks does not match"
+
+    # debugging 용
+    logger.info(f"PP Group initialization start:{group_ranks}")
+
+    # Build the pipeline model-parallel groups.
+    global _PP
+    assert _PP is None, (
+        "pipeline model parallel group is already initialized")
+    _PP = init_model_parallel_group(group_ranks,
+                                    get_world_group().local_rank,
+                                    backend,
+                                    group_name="pp")
+
+    global _DP
+    assert _DP is None, ("data parallel group is already initialized")
+    # DP 지원 x 따라서 대충 초기화 해 준다.
+    group_ranks = [[x] for x in range(world_size)]
+    _DP = init_model_parallel_group(group_ranks,
+                                    get_world_group().local_rank,
+                                    backend,
+                                    group_name="dp")
+
+    logger.info(
+        "rank %s in world size %s is assigned as "
+        "DP rank %s, PP rank %s, TP rank %s", rank, world_size,
+        _DP.rank_in_group, _PP.rank_in_group, _TP.rank_in_group)
+    
+    logger.info(f"global rank:{get_world_group().rank}, Global Group:{get_world_group().ranks}, PP Group:{get_pp_group().ranks}, TP Group:{get_tp_group().ranks}")
+
 def ensure_kv_transfer_initialized(vllm_config: "VllmConfig") -> None:
     """
     Initialize KV cache transfer parallel group.
@@ -1097,6 +1194,36 @@ def ensure_kv_transfer_initialized(vllm_config: "VllmConfig") -> None:
             local_rank=get_world_group().local_rank,
             config=vllm_config)
 
+# TP 병렬화 전략을 각 Stage 별로 다르게 초기화 하기 위한 새로운 함수
+def ensure_hetero_model_parallel_initialized(
+        parallel_strategy: List[int],
+        backend: Optional[str] = None) -> None:
+    """이 함수는 기존 ensure_model_parallel_initialized 함수에서 Uneven 한 그룹화를 지원하기 위해서 만든다.
+    대부분의 기능은 기존 함수와 최대한 동일하도록 설계된다.
+    """
+    backend = backend or torch.distributed.get_backend(
+        get_world_group().device_group)
+    if not model_parallel_is_initialized():
+        initialize_hetero_model_parallel(parallel_strategy, backend)
+        return
+    
+    # 초기화 잘 됐는지 확인해야 함.
+    current_global_rank = get_world_group().rank
+    tensor_parallel_model_size = -1
+    for stage in range(len(parallel_strategy)):
+        stage_size = parallel_strategy[stage]
+        if current_global_rank < stage_size:
+            tensor_parallel_model_size = stage_size
+            break
+    
+    assert (
+        get_tensor_model_parallel_world_size() == tensor_parallel_model_size
+    ), ("tensor parallel group already initialized, but of unexpected size: "
+        f"{get_tensor_model_parallel_world_size()=} vs. "
+        f"{tensor_parallel_model_size}")
+    
+    # pp 는 현재 체크하지 않을 것
+    
 
 def ensure_model_parallel_initialized(
     tensor_model_parallel_size: int,
@@ -1298,3 +1425,26 @@ def in_the_same_node_as(pg: Union[ProcessGroup, StatelessProcessGroup],
             aggregated_data += rank_data
 
     return [x == 1 for x in aggregated_data.tolist()]
+
+
+# 특정 rank 에 해당하는 stage 에 대한 유틸 함수 추가
+def is_first_stage(rank: int) -> bool:
+    assert ParallelStrategy is not None, "ParallelStrategy is not initialized"
+    return rank < ParallelStrategy[0]
+
+def is_last_stage(rank: int) -> bool:
+    assert ParallelStrategy is not None, "ParallelStrategy is not initialized"
+    return rank >= sum(ParallelStrategy[:-1])
+
+def get_stage(rank: int) -> int:
+    assert ParallelStrategy is not None, "ParallelStrategy is not initialized"
+    old_rank = rank
+    for i, stage_size in enumerate(ParallelStrategy):
+        if rank < stage_size:
+            return i
+        rank -= stage_size
+    raise ValueError(f"Rank {old_rank} is out of range for any stage")
+
+def get_pp_size() -> int:
+    assert ParallelStrategy is not None, "ParallelStrategy is not initialized"
+    return len(ParallelStrategy)

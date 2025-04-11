@@ -54,6 +54,7 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
 
+from vllm.distributed.parallel_state import is_first_stage, is_last_stage
 
 class LlamaMLP(nn.Module):
 
@@ -306,8 +307,10 @@ class LlamaModel(nn.Module):
                       (lora_config.max_loras or 1)) if lora_config else 0
         self.vocab_size = config.vocab_size + lora_vocab
         self.org_vocab_size = config.vocab_size
-        if get_pp_group().is_first_rank or (config.tie_word_embeddings
-                                            and get_pp_group().is_last_rank):
+        # if get_pp_group().is_first_rank or (config.tie_word_embeddings
+        #                                     and get_pp_group().is_last_rank):
+        if is_first_stage(get_pp_group().rank) or (config.tie_word_embeddings
+                                                    and is_last_stage(get_pp_group().rank)):
             self.embed_tokens = VocabParallelEmbedding(
                 self.vocab_size,
                 config.hidden_size,
@@ -324,7 +327,8 @@ class LlamaModel(nn.Module):
                                       prefix=prefix),
             prefix=f"{prefix}.layers",
         )
-        if get_pp_group().is_last_rank:
+        # if get_pp_group().is_last_rank:
+        if is_last_stage(get_pp_group().rank):
             self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         else:
             self.norm = PPMissingLayer()
@@ -343,7 +347,8 @@ class LlamaModel(nn.Module):
         intermediate_tensors: Optional[IntermediateTensors],
         inputs_embeds: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
-        if get_pp_group().is_first_rank:
+        # if get_pp_group().is_first_rank:
+        if is_first_stage(get_pp_group().rank):
             if inputs_embeds is not None:
                 hidden_states = inputs_embeds
             else:
@@ -357,7 +362,8 @@ class LlamaModel(nn.Module):
         for layer in self.layers[self.start_layer:self.end_layer]:
             hidden_states, residual = layer(positions, hidden_states, residual)
 
-        if not get_pp_group().is_last_rank:
+        # if not get_pp_group().is_last_rank:
+        if not is_last_stage(get_pp_group().rank):
             return IntermediateTensors({
                 "hidden_states": hidden_states,
                 "residual": residual
@@ -480,7 +486,8 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         self.model = self._init_model(vllm_config=vllm_config,
                                       prefix=maybe_prefix(prefix, "model"))
 
-        if get_pp_group().is_last_rank:
+        # if get_pp_group().is_last_rank:
+        if is_last_stage(get_pp_group().rank):
             self.unpadded_vocab_size = config.vocab_size
             if lora_config:
                 self.unpadded_vocab_size += lora_config.lora_extra_vocab_size
