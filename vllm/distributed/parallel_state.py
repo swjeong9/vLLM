@@ -770,7 +770,7 @@ class GroupCoordinator:
             else:
                 received_tensor_dict[key] = value
         
-        logger.info(f"recv tensor: global rank={self.rank}, src_global_rank={src_global_rank}, pp group={self.ranks}")
+        logger.debug(f"recv tensor: global rank={self.rank}, src_global_rank={src_global_rank}, pp group={self.ranks}")
         
         # 수신한 딕셔너리를 TP 그룹에 broadcast
         # broadcast_tensor_dict의 src 파라미터는 TP Group 내 rank
