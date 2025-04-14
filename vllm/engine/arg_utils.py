@@ -427,21 +427,28 @@ class EngineArgs:
             'only supports Ray for distributed inference.')
 
         # parallel strategy 추가
-        parser.add_argument('--parallel-strategy',
-                            type=str,
-                            default=EngineArgs.parallel_strategy,
-                            help='Parallel strategy for the model. '
-                            'For example, ``[4, 2]`` means stage 0 consists of 4 shards and stage 1 consists of 2 shards.')
-        # parser.add_argument('--pipeline-parallel-size',
-        #                     '-pp',
-        #                     type=int,
-        #                     default=EngineArgs.pipeline_parallel_size,
-        #                     help='Number of pipeline stages.')
-        # parser.add_argument('--tensor-parallel-size',
-        #                     '-tp',
-        #                     type=int,
-        #                     default=EngineArgs.tensor_parallel_size,
-        #                     help='Number of tensor parallel replicas.')
+        parser.add_argument(
+            '--parallel-strategy',
+            type=int,       # 리스트 요소 타입은 정수
+            nargs='+',      # 하나 이상의 인자를 받음
+            default=[1],    # 기본값을 직접 리스트로 제공
+            help=('Parallel strategy for the model. '
+                  'Example: --parallel-strategy 4 2 means stage 0 has 4 '
+                  'shards and stage 1 has 2 shards.')
+        )
+        # 이 인자들은 이제 사용되지 않을 것이나, 현재 모든 부분에서 사용하지 않도록
+        # 수정한 것은 아니므로, 일단 남겨둔다.
+        parser.add_argument('--pipeline-parallel-size',
+                            '-pp',
+                            type=int,
+                            default=EngineArgs.pipeline_parallel_size,
+                            help='Number of pipeline stages.')
+        parser.add_argument('--tensor-parallel-size',
+                            '-tp',
+                            type=int,
+                            default=EngineArgs.tensor_parallel_size,
+                            help='Number of tensor parallel replicas.')
+        
         parser.add_argument(
             '--enable-expert-parallel',
             action='store_true',
