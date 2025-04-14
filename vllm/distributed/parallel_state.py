@@ -692,7 +692,7 @@ class GroupCoordinator:
         # 메타데이터 전송 (기존 send_object 사용, CPU 그룹 활용)
         # send_object의 dst 파라미터는 그룹 내 local rank.
         self.send_object(metadata_list, dst=dst_pp_rank_in_group)
-        logger.info(f"send_object: global rank={self.rank}, rank in pp group={self.rank_in_group}, dst_pp_rank_in_group={dst_pp_rank_in_group}")
+        logger.debug(f"send_object: global rank={self.rank}, rank in pp group={self.rank_in_group}, dst_pp_rank_in_group={dst_pp_rank_in_group}")
 
         # 텐서 전송 (전체, 슬라이싱 없음) (Device 그룹, NCCL 활용)
         # torch.distributed.send의 dst 파라미터는 global rank
@@ -702,7 +702,7 @@ class GroupCoordinator:
             # 전체 텐서 전송
             torch.distributed.send(tensor, dst=dst_global_rank, group=self.device_group)
         
-        logger.info(f"send tensor: global rank={self.rank}, dst_global_rank={dst_global_rank}, pp group={self.ranks}")
+        logger.debug(f"send tensor: global rank={self.rank}, dst_global_rank={dst_global_rank}, pp group={self.ranks}")
 
 
     def recv_full_tensor_and_broadcast(self, 
@@ -724,10 +724,10 @@ class GroupCoordinator:
         received_tensor_dict = None
 
         if not is_driver:
-            logger.info(f"self.rank={self.rank}. run Non-Driver Worker Logic")
+            logger.debug(f"self.rank={self.rank}. run Non-Driver Worker Logic")
             # non-driver worker 는 driver worker 로부터 broadcast 수신 후 리턴
             if tp_group.world_size > 1:
-                logger.info(f"get broadcast tensor: global rank={self.rank}, rank in tp group={tp_group.rank_in_group}, src=0, tp group={tp_group.ranks}")
+                logger.debug(f"get broadcast tensor: global rank={self.rank}, rank in tp group={tp_group.rank_in_group}, src=0, tp group={tp_group.ranks}")
                 received_tensor_dict = tp_group.broadcast_tensor_dict(None, src=0)
             else:
                 raise ValueError("TP 그룹 크기가 1인 non-driver는 이론적으로 존재하지 않음")
@@ -744,7 +744,7 @@ class GroupCoordinator:
         # recv_object의 src 파라미터는 그룹 내 local rank.
         # 해당 recv_object 내부에서 알아서 global rank로 변환해서 수신함.
         metadata_list = self.recv_object(src=src_pp_rank_in_group)
-        logger.info(f"recv_object: global rank={self.rank}, rank in pp group={self.rank_in_group}, src_pp_rank_in_group={src_pp_rank_in_group}, pp group={self.ranks}")
+        logger.debug(f"recv_object: global rank={self.rank}, rank in pp group={self.rank_in_group}, src_pp_rank_in_group={src_pp_rank_in_group}, pp group={self.ranks}")
 
         # 텐서 수신 (전체, 슬라이싱 없음) (Device 그룹, NCCL 활용)
         # torch.distributed.recv의 src 파라미터는 global rank
@@ -779,7 +779,7 @@ class GroupCoordinator:
             # broadcast_tensor_dict는 드라이버가 dict를 제공하고, 나머지는 None을 제공해야 함
             # 즉, 송신 : tensor dict, 수신 : None 을 입력으로 넣어줘야 함
             tp_group.broadcast_tensor_dict(received_tensor_dict, src=0)
-            logger.info(f"put broadcast tensor: global rank={self.rank}, rank in tp group={tp_group.rank_in_group}, src=0, tp group={tp_group.ranks}")
+            logger.debug(f"put broadcast tensor: global rank={self.rank}, rank in tp group={tp_group.rank_in_group}, src=0, tp group={tp_group.ranks}")
         
         # 여기까지 올바르게 도착했다면 received_tensor_dict 는 None 이면 안됨
         assert received_tensor_dict is not None, "received_tensor_dict is None"

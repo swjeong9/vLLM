@@ -412,7 +412,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
 
         # if not get_pp_group().is_first_rank:
         # 잠깐 디버깅용
-        logger.info(f"My global rank={get_pp_group().rank}, is_first_stage(get_pp_group().rank)={is_first_stage(get_pp_group().rank)}")
+        logger.debug(f"My global rank={get_pp_group().rank}, is_first_stage(get_pp_group().rank)={is_first_stage(get_pp_group().rank)}")
         if not is_first_stage(get_pp_group().rank):
             # 기존 코드
             # intermediate_tensors = IntermediateTensors(
@@ -422,7 +422,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             # 새 코드
             tp_group = get_tp_group()
             pp_group = get_pp_group()
-            logger.info(f"call recv_full_tensor_and_broadcast : global rank={pp_group.rank}, rank in pp group={pp_group.rank_in_group}, pp_group={pp_group.ranks}, tp_group={tp_group.ranks}")
+            logger.debug(f"call recv_full_tensor_and_broadcast : global rank={pp_group.rank}, rank in pp group={pp_group.rank_in_group}, pp_group={pp_group.ranks}, tp_group={tp_group.ranks}")
             intermediate_tensors = IntermediateTensors(
                 pp_group.recv_full_tensor_and_broadcast(
                     self.is_driver_worker, tp_group))
@@ -458,7 +458,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             #                                 all_gather_group=get_tp_group())
             
             # 통신 방법 변경 코드
-            logger.info(f"call send_full_tensor_and_broadcast : global rank={get_pp_group().rank}, rank in pp group={get_pp_group().rank_in_group}, pp_group={get_pp_group().ranks}, tp_group={get_tp_group().ranks}")
+            logger.debug(f"call send_full_tensor_and_broadcast : global rank={get_pp_group().rank}, rank in pp group={get_pp_group().rank_in_group}, pp_group={get_pp_group().ranks}, tp_group={get_tp_group().ranks}")
             pp_group = get_pp_group()
             pp_group.send_full_tensor_and_broadcast(output.tensors, self.is_driver_worker)
             
