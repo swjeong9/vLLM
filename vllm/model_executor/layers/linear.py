@@ -4,6 +4,7 @@ import itertools
 from abc import abstractmethod
 from typing import Any, Literal, Optional, Union
 
+from safetensors import safe_open
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -174,11 +175,15 @@ class UnquantizedLinearMethod(LinearMethodBase):
                        input_size_per_partition: int,
                        output_partition_sizes: list[int], input_size: int,
                        output_size: int, params_dtype: torch.dtype,
+                       weight_tensor: Optional[torch.Tensor] = None,
                        **extra_weight_attrs):
-        weight = Parameter(torch.empty(sum(output_partition_sizes),
+        if weight_tensor is None:
+            weight = Parameter(torch.empty(sum(output_partition_sizes),
                                        input_size_per_partition,
                                        dtype=params_dtype),
                            requires_grad=False)
+        else:
+            weight = Parameter(weight_tensor, requires_grad=False)
         set_weight_attrs(weight, {"input_dim": 1, "output_dim": 0})
         layer.register_parameter("weight", weight)
         set_weight_attrs(weight, extra_weight_attrs)
@@ -368,6 +373,7 @@ class ColumnParallelLinear(LinearBase):
         prefix: str = "",
         *,
         return_bias: bool = True,
+        weight_tensor: Optional[torch.Tensor] = None,
     ):
         # Divide the weight matrix along the last dimension.
         self.tp_size = get_tensor_model_parallel_world_size()
@@ -404,7 +410,8 @@ class ColumnParallelLinear(LinearBase):
             params_dtype=self.params_dtype,
             weight_loader=(
                 self.weight_loader_v2 if self.quant_method.__class__.__name__
-                in WEIGHT_LOADER_V2_SUPPORTED else self.weight_loader))
+                in WEIGHT_LOADER_V2_SUPPORTED else self.weight_loader),
+            weight_tensor=weight_tensor)
         if bias:
             self.bias = Parameter(
                 torch.empty(self.output_size_per_partition,
@@ -442,6 +449,10 @@ class ColumnParallelLinear(LinearBase):
             param.materialize(final_shape, dtype=loaded_weight.dtype)
 
         param_data = param.data
+
+        # 잠시 디버깅 용으로 사용한다.
+        is_sharded_weight = True
+
         if output_dim is not None and not is_sharded_weight:
             shard_size = param_data.shape[output_dim]
             start_idx = tp_rank * shard_size
@@ -1146,6 +1157,7 @@ class RowParallelLinear(LinearBase):
         prefix: str = "",
         *,
         return_bias: bool = True,
+        weight_tensor: Optional[torch.Tensor] = None,
     ):
         # Divide the weight matrix along the first dimension.
         self.tp_rank = get_tensor_model_parallel_rank()
@@ -1175,7 +1187,8 @@ class RowParallelLinear(LinearBase):
             params_dtype=self.params_dtype,
             weight_loader=(
                 self.weight_loader_v2 if self.quant_method.__class__.__name__
-                in WEIGHT_LOADER_V2_SUPPORTED else self.weight_loader))
+                in WEIGHT_LOADER_V2_SUPPORTED else self.weight_loader),
+            weight_tensor=weight_tensor)
         if not reduce_results and (bias and not skip_bias_add):
             raise ValueError("When not reduce the results, adding bias to the "
                              "results can lead to incorrect results")

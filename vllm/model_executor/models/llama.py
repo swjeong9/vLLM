@@ -24,6 +24,7 @@
 """Inference-only LLaMA model compatible with HuggingFace weights."""
 from typing import Any, Dict, Iterable, Optional, Set, Tuple, Type, Union
 
+from safetensors import safe_open
 import torch
 from torch import nn
 from transformers import LlamaConfig
@@ -34,7 +35,7 @@ from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.layernorm import RMSNorm
-from vllm.model_executor.layers.linear import (MergedColumnParallelLinear,
+from vllm.model_executor.layers.linear import (ColumnParallelLinear, MergedColumnParallelLinear,
                                                QKVParallelLinear,
                                                RowParallelLinear)
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
@@ -56,6 +57,10 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
 
 from vllm.distributed.parallel_state import is_first_stage, is_last_stage
 
+TMP_SAFETENSOR_PATH = "/home/ubuntu/.cache/huggingface/hub/models--meta-llama--Llama-3.2-1B-Instruct/snapshots/9213176726f574b556790deb65791e0c5aa438b6/model.safetensors"
+
+TENSOR_DICT = {}
+
 class LlamaMLP(nn.Module):
 
     def __init__(
@@ -68,12 +73,31 @@ class LlamaMLP(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
-        self.gate_up_proj = MergedColumnParallelLinear(
+        # self.gate_up_proj = MergedColumnParallelLinear(
+        #     input_size=hidden_size,
+        #     output_sizes=[intermediate_size] * 2,
+        #     bias=bias,
+        #     quant_config=quant_config,
+        #     prefix=f"{prefix}.gate_up_proj",
+        # )
+        self.gate_proj_tensor_name = f"{prefix}.gate_proj.weight"
+        self.up_proj_tensor_name = f"{prefix}.up_proj.weight"
+        self.down_proj_tensor_name = f"{prefix}.down_proj.weight"
+        self.gate_proj = ColumnParallelLinear(
             input_size=hidden_size,
-            output_sizes=[intermediate_size] * 2,
+            output_size=intermediate_size,
             bias=bias,
             quant_config=quant_config,
-            prefix=f"{prefix}.gate_up_proj",
+            prefix=f"{prefix}.gate_proj",
+            weight_tensor=TENSOR_DICT[self.gate_proj_tensor_name]
+        )
+        self.up_proj = ColumnParallelLinear(
+            input_size=hidden_size,
+            output_size=intermediate_size,
+            bias=bias,
+            quant_config=quant_config,
+            prefix=f"{prefix}.up_proj",
+            weight_tensor=TENSOR_DICT[self.up_proj_tensor_name]
         )
         self.down_proj = RowParallelLinear(
             input_size=intermediate_size,
@@ -81,6 +105,7 @@ class LlamaMLP(nn.Module):
             bias=bias,
             quant_config=quant_config,
             prefix=f"{prefix}.down_proj",
+            weight_tensor=TENSOR_DICT[self.down_proj_tensor_name]
         )
         if hidden_act != "silu":
             raise ValueError(f"Unsupported activation: {hidden_act}. "
@@ -88,7 +113,10 @@ class LlamaMLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x):
-        x, _ = self.gate_up_proj(x)
+        # x, _ = self.gate_up_proj(x)
+        o_gate, _ = self.gate_proj(x)
+        o_up, _ = self.up_proj(x)
+        x = torch.cat((o_gate, o_up), dim=-1)
         x = self.act_fn(x)
         x, _ = self.down_proj(x)
         return x
@@ -138,22 +166,52 @@ class LlamaAttention(nn.Module):
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
 
-        self.qkv_proj = QKVParallelLinear(
-            hidden_size=hidden_size,
-            head_size=self.head_dim,
-            total_num_heads=self.total_num_heads,
-            total_num_kv_heads=self.total_num_kv_heads,
+        # self.qkv_proj = QKVParallelLinear(
+        #     hidden_size=hidden_size,
+        #     head_size=self.head_dim,
+        #     total_num_heads=self.total_num_heads,
+        #     total_num_kv_heads=self.total_num_kv_heads,
+        #     bias=bias,
+        #     quant_config=quant_config,
+        #     prefix=f"{prefix}.qkv_proj",
+        # )
+
+        self.q_proj_tensor_name = f"{prefix}.q_proj.weight"
+        self.k_proj_tensor_name = f"{prefix}.k_proj.weight"
+        self.v_proj_tensor_name = f"{prefix}.v_proj.weight"
+        self.o_proj_tensor_name = f"{prefix}.o_proj.weight"
+
+        self.q_proj = ColumnParallelLinear(
+            input_size=hidden_size,
+            output_size=self.q_size,
             bias=bias,
             quant_config=quant_config,
-            prefix=f"{prefix}.qkv_proj",
+            prefix=f"{prefix}.q_proj",
+            weight_tensor=TENSOR_DICT[self.q_proj_tensor_name]
         )
-
+        self.k_proj = ColumnParallelLinear(
+            input_size=hidden_size,
+            output_size=self.kv_size,
+            bias=bias,
+            quant_config=quant_config,
+            prefix=f"{prefix}.k_proj",
+            weight_tensor=TENSOR_DICT[self.k_proj_tensor_name]
+        )
+        self.v_proj = ColumnParallelLinear(
+            input_size=hidden_size,
+            output_size=self.kv_size,
+            bias=bias,
+            quant_config=quant_config,
+            prefix=f"{prefix}.v_proj",
+            weight_tensor=TENSOR_DICT[self.v_proj_tensor_name]
+        )
         self.o_proj = RowParallelLinear(
             input_size=self.total_num_heads * self.head_dim,
             output_size=hidden_size,
             bias=bias_o_proj,
             quant_config=quant_config,
             prefix=f"{prefix}.o_proj",
+            weight_tensor=TENSOR_DICT[self.o_proj_tensor_name]
         )
 
         is_neox_style = True
@@ -199,8 +257,11 @@ class LlamaAttention(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states)
-        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        # qkv, _ = self.qkv_proj(hidden_states)
+        # q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        q, _ = self.q_proj(hidden_states)
+        k, _ = self.k_proj(hidden_states)
+        v, _ = self.v_proj(hidden_states)
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)
@@ -262,6 +323,11 @@ class LlamaDecoderLayer(nn.Module):
                                        eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size,
                                                 eps=config.rms_norm_eps)
+        #TEST
+        self.input_layernorm_tensor_name = f"{prefix}.input_layernorm.weight"
+        self.post_attention_layernorm_tensor_name = f"{prefix}.post_attention_layernorm.weight"
+        default_weight_loader(self.input_layernorm.weight, TENSOR_DICT[self.input_layernorm_tensor_name])
+        default_weight_loader(self.post_attention_layernorm.weight, TENSOR_DICT[self.post_attention_layernorm_tensor_name])
 
     def forward(
         self,
@@ -336,6 +402,12 @@ class LlamaModel(nn.Module):
         self.make_empty_intermediate_tensors = (
             make_empty_intermediate_tensors_factory(
                 ["hidden_states", "residual"], config.hidden_size))
+
+        # TEST
+        self.embed_tokens_tensor_name = f"{prefix}.embed_tokens.weight"
+        self.norm_tensor_name = f"{prefix}.norm.weight"
+        default_weight_loader(self.norm.weight, TENSOR_DICT[self.norm_tensor_name])
+        default_weight_loader(self.embed_tokens.weight, TENSOR_DICT[self.embed_tokens_tensor_name])
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
@@ -482,6 +554,11 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         lora_config = vllm_config.lora_config
         self.config = config
         self.lora_config = lora_config
+
+        global TENSOR_DICT
+        with safe_open(TMP_SAFETENSOR_PATH, framework="pt", device="cuda") as f:
+            for key in f.keys():
+                TENSOR_DICT[key] = f.get_tensor(key).to(vllm_config.model_config.dtype)
 
         self.model = self._init_model(vllm_config=vllm_config,
                                       prefix=maybe_prefix(prefix, "model"))
