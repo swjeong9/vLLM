@@ -26,12 +26,16 @@ class UnquantizedEmbeddingMethod(QuantizeMethodBase):
                        input_size_per_partition: int,
                        output_partition_sizes: List[int], input_size: int,
                        output_size: int, params_dtype: torch.dtype,
+                       weight_tensor: Optional[torch.Tensor] = None,
                        **extra_weight_attrs):
         """Create weights for embedding layer."""
-        weight = Parameter(torch.empty(sum(output_partition_sizes),
+        if weight_tensor is not None:
+            weight = Parameter(weight_tensor, requires_grad=False)
+        else:
+            weight = Parameter(torch.empty(sum(output_partition_sizes),
                                        input_size_per_partition,
                                        dtype=params_dtype),
-                           requires_grad=False)
+                               requires_grad=False)
         set_weight_attrs(weight, {"input_dim": 1, "output_dim": 0})
         layer.register_parameter("weight", weight)
         set_weight_attrs(weight, extra_weight_attrs)
@@ -202,7 +206,8 @@ class VocabParallelEmbedding(torch.nn.Module):
                  org_num_embeddings: Optional[int] = None,
                  padding_size: int = DEFAULT_VOCAB_PADDING_SIZE,
                  quant_config: Optional[QuantizationConfig] = None,
-                 prefix: str = ""):
+                 prefix: str = "",
+                 weight_tensor: Optional[torch.Tensor] = None):
         super().__init__()
 
         # Keep the input dimensions.
@@ -266,6 +271,7 @@ class VocabParallelEmbedding(torch.nn.Module):
                                          self.embedding_dim,
                                          self.num_embeddings_padded,
                                          params_dtype=params_dtype,
+                                         weight_tensor=weight_tensor,
                                          weight_loader=self.weight_loader)
 
     @classmethod
