@@ -57,9 +57,29 @@ from .utils import (AutoWeightsLoader, PPMissingLayer, extract_layer_index,
 
 from vllm.distributed.parallel_state import is_first_stage, is_last_stage
 
-TMP_SAFETENSOR_PATH = "/home/ubuntu/.cache/huggingface/hub/models--meta-llama--Llama-3.2-1B-Instruct/snapshots/9213176726f574b556790deb65791e0c5aa438b6/model.safetensors"
+import time
+from vllm.logger import init_logger
+logger = init_logger(__name__)
+
+# tensor server store 로부터 텐서 정보 가져오기 위해서 사용
+from multiprocessing.managers import BaseManager, DictProxy
+
+class TensorManager(BaseManager):
+    pass
 
 TENSOR_DICT = {}
+
+TENSOR_SERVER_HOST = '127.0.0.1'
+TENSOR_SERVER_PORT = 50001
+TENSOR_SERVER_AUTHKEY = b'param_store'
+
+MANAGER_INSTANCE = None
+
+# 매니저 서버에서 등록되어 있는 함수
+#클라이언트 측에서도 DictProxy 를 사용하도록 지정
+TensorManager.register('get_tensor_dict', proxytype=DictProxy)
+
+
 
 class LlamaMLP(nn.Module):
 
@@ -319,15 +339,14 @@ class LlamaDecoderLayer(nn.Module):
             bias=getattr(config, "mlp_bias", False),
             prefix=f"{prefix}.mlp",
         )
-        self.input_layernorm = RMSNorm(config.hidden_size,
-                                       eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(config.hidden_size,
-                                                eps=config.rms_norm_eps)
-        #TEST
         self.input_layernorm_tensor_name = f"{prefix}.input_layernorm.weight"
         self.post_attention_layernorm_tensor_name = f"{prefix}.post_attention_layernorm.weight"
-        default_weight_loader(self.input_layernorm.weight, TENSOR_DICT[self.input_layernorm_tensor_name])
-        default_weight_loader(self.post_attention_layernorm.weight, TENSOR_DICT[self.post_attention_layernorm_tensor_name])
+        self.input_layernorm = RMSNorm(config.hidden_size,
+                                       eps=config.rms_norm_eps,
+                                       weight_tensor=TENSOR_DICT[self.input_layernorm_tensor_name])
+        self.post_attention_layernorm = RMSNorm(config.hidden_size,
+                                                eps=config.rms_norm_eps,
+                                                weight_tensor=TENSOR_DICT[self.post_attention_layernorm_tensor_name])
 
     def forward(
         self,
@@ -373,6 +392,10 @@ class LlamaModel(nn.Module):
                       (lora_config.max_loras or 1)) if lora_config else 0
         self.vocab_size = config.vocab_size + lora_vocab
         self.org_vocab_size = config.vocab_size
+
+        self.embed_tokens_tensor_name = f"{prefix}.embed_tokens.weight"
+        self.norm_tensor_name = f"{prefix}.norm.weight"
+
         # if get_pp_group().is_first_rank or (config.tie_word_embeddings
         #                                     and get_pp_group().is_last_rank):
         if is_first_stage(get_pp_group().rank) or (config.tie_word_embeddings
@@ -382,6 +405,7 @@ class LlamaModel(nn.Module):
                 config.hidden_size,
                 org_num_embeddings=config.vocab_size,
                 quant_config=quant_config,
+                weight_tensor=TENSOR_DICT[self.embed_tokens_tensor_name]
             )
         else:
             self.embed_tokens = PPMissingLayer()
@@ -395,19 +419,14 @@ class LlamaModel(nn.Module):
         )
         # if get_pp_group().is_last_rank:
         if is_last_stage(get_pp_group().rank):
-            self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps,
+                               weight_tensor=TENSOR_DICT[self.norm_tensor_name])
         else:
             self.norm = PPMissingLayer()
 
         self.make_empty_intermediate_tensors = (
             make_empty_intermediate_tensors_factory(
                 ["hidden_states", "residual"], config.hidden_size))
-
-        # TEST
-        self.embed_tokens_tensor_name = f"{prefix}.embed_tokens.weight"
-        self.norm_tensor_name = f"{prefix}.norm.weight"
-        default_weight_loader(self.norm.weight, TENSOR_DICT[self.norm_tensor_name])
-        default_weight_loader(self.embed_tokens.weight, TENSOR_DICT[self.embed_tokens_tensor_name])
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
@@ -555,10 +574,45 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         self.config = config
         self.lora_config = lora_config
 
+        ### 서버에서 텐서 불러오기 시작
         global TENSOR_DICT
-        with safe_open(TMP_SAFETENSOR_PATH, framework="pt", device="cuda") as f:
-            for key in f.keys():
-                TENSOR_DICT[key] = f.get_tensor(key).to(vllm_config.model_config.dtype)
+        global MANAGER_INSTANCE
+        # 매니저 객체 생성
+        MANAGER_INSTANCE = TensorManager(address=(TENSOR_SERVER_HOST, TENSOR_SERVER_PORT), authkey=TENSOR_SERVER_AUTHKEY)
+        if MANAGER_INSTANCE is None:
+            raise ValueError("Failed to create TensorManager instance")
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                # 서버에 연결 시도
+                MANAGER_INSTANCE.connect()
+                logger.info("Connected to TensorManager server.")
+                break # 연결 성공
+            except ConnectionRefusedError:
+                logger.info(f"Connection refused (Attempt {attempt + 1}/{max_retries}). Server might not be ready. Retrying in {retry_delay}s...")
+                if attempt == max_retries - 1:
+                    raise ValueError("Max connection attempts reached. Exiting.")
+                logger.info(f"Sleep {2**attempt}s...")
+                time.sleep(2**attempt)
+            except Exception as e:
+                logger.error(f"Error connecting to manager")
+                raise e
+        logger.info("TensorManager server connected successfully.")
+
+        try:
+            logger.info("Accessing Tensor Dict via Manager")
+            TENSOR_DICT = MANAGER_INSTANCE.get_tensor_dict()
+
+            # 텐서 딕셔너리가 비어있는지 확인
+            if not TENSOR_DICT:
+                raise ValueError("Tensor Dictionary is empty")
+            # 텐서 딕셔너리 확인 (일시적인 디버깅)
+            for key in TENSOR_DICT.keys():
+                logger.info(f"Loaded tensor: {key} / shape: {TENSOR_DICT[key].shape} / device: {TENSOR_DICT[key].device}")
+        except Exception as e:
+            logger.error(f"Error accessing Tensor Dict via Manager: {e}")
+            raise e
+        ### 서버에서 텐서 불러오기 끝
 
         self.model = self._init_model(vllm_config=vllm_config,
                                       prefix=maybe_prefix(prefix, "model"))

@@ -267,7 +267,6 @@ class DefaultModelLoader(BaseModelLoader):
         If the model is not local, it will be downloaded."""
         model_name_or_path = (self._maybe_download_from_modelscope(
             model_name_or_path, revision) or model_name_or_path)
-
         is_local = os.path.isdir(model_name_or_path)
         load_format = self.load_config.load_format
         use_safetensors = False
@@ -418,6 +417,7 @@ class DefaultModelLoader(BaseModelLoader):
         device_config = vllm_config.device_config
         model_config = vllm_config.model_config
         target_device = torch.device(device_config.device)
+        self.download_model(model_config)
         with set_default_torch_dtype(model_config.dtype):
             with target_device:
                 # 이 모델은 LlamaForCausalLM 이다.
