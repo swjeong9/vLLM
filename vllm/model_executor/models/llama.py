@@ -607,8 +607,8 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             if not TENSOR_DICT:
                 raise ValueError("Tensor Dictionary is empty")
             # 텐서 딕셔너리 확인 (일시적인 디버깅)
-            for key in TENSOR_DICT.keys():
-                logger.info(f"Loaded tensor: {key} / shape: {TENSOR_DICT[key].shape} / device: {TENSOR_DICT[key].device}")
+            # for key in TENSOR_DICT.keys():
+            #     logger.info(f"Loaded tensor: {key} / shape: {TENSOR_DICT[key].shape} / device: {TENSOR_DICT[key].device}")
         except Exception as e:
             logger.error(f"Error accessing Tensor Dict via Manager: {e}")
             raise e
@@ -622,19 +622,36 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             self.unpadded_vocab_size = config.vocab_size
             if lora_config:
                 self.unpadded_vocab_size += lora_config.lora_extra_vocab_size
-            self.lm_head = ParallelLMHead(
-                self.unpadded_vocab_size,
-                config.hidden_size,
-                org_num_embeddings=config.vocab_size,
-                padding_size=(
-                    DEFAULT_VOCAB_PADDING_SIZE
-                    # We need bigger padding if using lora for kernel
-                    # compatibility
-                    if not lora_config else
-                    lora_config.lora_vocab_padding_size),
-                quant_config=quant_config,
-                prefix=maybe_prefix(prefix, "lm_head"),
-            )
+            if config.tie_word_embeddings:
+                self.lm_head = ParallelLMHead(
+                    self.unpadded_vocab_size,
+                    config.hidden_size,
+                    org_num_embeddings=config.vocab_size,
+                    padding_size=(
+                        DEFAULT_VOCAB_PADDING_SIZE
+                        # We need bigger padding if using lora for kernel
+                        # compatibility
+                        if not lora_config else
+                        lora_config.lora_vocab_padding_size),
+                    quant_config=quant_config,
+                    prefix=maybe_prefix(prefix, "lm_head"),
+                )
+            else:
+                lm_head_tensor_name = f"lm_head.weight"
+                self.lm_head = ParallelLMHead(
+                    self.unpadded_vocab_size,
+                    config.hidden_size,
+                    org_num_embeddings=config.vocab_size,
+                    padding_size=(
+                        DEFAULT_VOCAB_PADDING_SIZE
+                        # We need bigger padding if using lora for kernel
+                        # compatibility
+                        if not lora_config else
+                        lora_config.lora_vocab_padding_size),
+                    quant_config=quant_config,
+                    prefix=maybe_prefix(prefix, "lm_head"),
+                    weight_tensor=TENSOR_DICT[lm_head_tensor_name]
+                )
             if config.tie_word_embeddings:
                 self.lm_head = self.lm_head.tie_weights(
                     self.model.embed_tokens)

@@ -460,10 +460,11 @@ class ParallelLMHead(VocabParallelEmbedding):
                  org_num_embeddings: Optional[int] = None,
                  padding_size: int = DEFAULT_VOCAB_PADDING_SIZE,
                  quant_config: Optional[QuantizationConfig] = None,
-                 prefix: str = ""):
+                 prefix: str = "",
+                 weight_tensor: Optional[torch.Tensor] = None):
         super().__init__(num_embeddings, embedding_dim, params_dtype,
                          org_num_embeddings, padding_size, quant_config,
-                         prefix)
+                         prefix, weight_tensor)
         self.quant_config = quant_config
         if bias:
             self.bias = Parameter(
