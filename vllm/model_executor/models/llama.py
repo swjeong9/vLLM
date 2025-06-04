@@ -353,10 +353,6 @@ class LlamaDecoderLayer(nn.Module):
                                                 eps=config.rms_norm_eps,
                                                 weight_tensor=TENSOR_DICT[self.post_attention_layernorm_tensor_name])
 
-
-        self.attention_time = 0
-        self.mlp_time = 0
-
     def forward(
         self,
         positions: torch.Tensor,
@@ -370,17 +366,13 @@ class LlamaDecoderLayer(nn.Module):
         else:
             hidden_states, residual = self.input_layernorm(
                 hidden_states, residual)
-        start_time = time.perf_counter()
         hidden_states = self.self_attn(positions=positions,
                                        hidden_states=hidden_states)
-        self.attention_time += time.perf_counter() - start_time
 
         # Fully Connected
-        start_time = time.perf_counter()
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
         hidden_states = self.mlp(hidden_states)
-        self.mlp_time += time.perf_counter() - start_time
         return hidden_states, residual
 
 
@@ -463,16 +455,8 @@ class LlamaModel(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
-        # attention_times = []
-        # mlp_times = []
         for layer in self.layers[self.start_layer:self.end_layer]:
             hidden_states, residual = layer(positions, hidden_states, residual)
-            # attention_times.append(layer.attention_time)
-            # mlp_times.append(layer.mlp_time)
-            # layer.attention_time = 0
-            # layer.mlp_time = 0
-
-        # logger.info(f"Attention time: {sum(attention_times) * 1000:.3f} ms | MLP time: {sum(mlp_times) * 1000:.3f} ms | input_shape: {input_ids.shape}")
 
         # if not get_pp_group().is_last_rank:
         if not is_last_stage(get_pp_group().rank):
