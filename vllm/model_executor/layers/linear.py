@@ -537,6 +537,7 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
         prefix: str = "",
         *,
         return_bias: bool = True,
+        weight_tensor: Optional[torch.Tensor] = None,
     ):
         self.output_sizes = output_sizes
         tp_size = get_tensor_model_parallel_world_size()
@@ -549,7 +550,8 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
                          params_dtype=params_dtype,
                          quant_config=quant_config,
                          prefix=prefix,
-                         return_bias=return_bias)
+                         return_bias=return_bias,
+                         weight_tensor=weight_tensor)
 
     def weight_loader(self,
                       param: Parameter,
@@ -815,6 +817,7 @@ class QKVParallelLinear(ColumnParallelLinear):
         prefix: str = "",
         *,
         return_bias: bool = True,
+        weight_tensor: Optional[torch.Tensor] = None,
     ):
         self.hidden_size = hidden_size
         self.head_size = head_size
@@ -849,7 +852,8 @@ class QKVParallelLinear(ColumnParallelLinear):
                          params_dtype=params_dtype,
                          quant_config=quant_config,
                          prefix=prefix,
-                         return_bias=return_bias)
+                         return_bias=return_bias,
+                         weight_tensor=weight_tensor)
 
     def _get_shard_offset_mapping(self, loaded_shard_id: str):
         shard_offset_mapping = {

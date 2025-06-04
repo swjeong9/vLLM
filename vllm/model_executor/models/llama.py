@@ -93,32 +93,34 @@ class LlamaMLP(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
-        # self.gate_up_proj = MergedColumnParallelLinear(
+        self.gate_up_proj_tensor_name = f"{prefix}.gate_up_proj.weight"
+        self.gate_up_proj = MergedColumnParallelLinear(
+            input_size=hidden_size,
+            output_sizes=[intermediate_size] * 2,
+            bias=bias,
+            quant_config=quant_config,
+            prefix=f"{prefix}.gate_up_proj",
+            weight_tensor=TENSOR_DICT[self.gate_up_proj_tensor_name]
+        )
+        # self.gate_proj_tensor_name = f"{prefix}.gate_proj.weight"
+        # self.up_proj_tensor_name = f"{prefix}.up_proj.weight"
+        # self.gate_proj = ColumnParallelLinear(
         #     input_size=hidden_size,
-        #     output_sizes=[intermediate_size] * 2,
+        #     output_size=intermediate_size,
         #     bias=bias,
         #     quant_config=quant_config,
-        #     prefix=f"{prefix}.gate_up_proj",
+        #     prefix=f"{prefix}.gate_proj",
+        #     weight_tensor=TENSOR_DICT[self.gate_proj_tensor_name]
         # )
-        self.gate_proj_tensor_name = f"{prefix}.gate_proj.weight"
-        self.up_proj_tensor_name = f"{prefix}.up_proj.weight"
+        # self.up_proj = ColumnParallelLinear(
+        #     input_size=hidden_size,
+        #     output_size=intermediate_size,
+        #     bias=bias,
+        #     quant_config=quant_config,
+        #     prefix=f"{prefix}.up_proj",
+        #     weight_tensor=TENSOR_DICT[self.up_proj_tensor_name]
+        # )
         self.down_proj_tensor_name = f"{prefix}.down_proj.weight"
-        self.gate_proj = ColumnParallelLinear(
-            input_size=hidden_size,
-            output_size=intermediate_size,
-            bias=bias,
-            quant_config=quant_config,
-            prefix=f"{prefix}.gate_proj",
-            weight_tensor=TENSOR_DICT[self.gate_proj_tensor_name]
-        )
-        self.up_proj = ColumnParallelLinear(
-            input_size=hidden_size,
-            output_size=intermediate_size,
-            bias=bias,
-            quant_config=quant_config,
-            prefix=f"{prefix}.up_proj",
-            weight_tensor=TENSOR_DICT[self.up_proj_tensor_name]
-        )
         self.down_proj = RowParallelLinear(
             input_size=intermediate_size,
             output_size=hidden_size,
@@ -133,10 +135,10 @@ class LlamaMLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x):
-        # x, _ = self.gate_up_proj(x)
-        o_gate, _ = self.gate_proj(x)
-        o_up, _ = self.up_proj(x)
-        x = torch.cat((o_gate, o_up), dim=-1)
+        x, _ = self.gate_up_proj(x)
+        # o_gate, _ = self.gate_proj(x)
+        # o_up, _ = self.up_proj(x)
+        # x = torch.cat((o_gate, o_up), dim=-1)
         x = self.act_fn(x)
         x, _ = self.down_proj(x)
         return x
@@ -186,45 +188,48 @@ class LlamaAttention(nn.Module):
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
 
-        # self.qkv_proj = QKVParallelLinear(
-        #     hidden_size=hidden_size,
-        #     head_size=self.head_dim,
-        #     total_num_heads=self.total_num_heads,
-        #     total_num_kv_heads=self.total_num_kv_heads,
-        #     bias=bias,
-        #     quant_config=quant_config,
-        #     prefix=f"{prefix}.qkv_proj",
-        # )
 
-        self.q_proj_tensor_name = f"{prefix}.q_proj.weight"
-        self.k_proj_tensor_name = f"{prefix}.k_proj.weight"
-        self.v_proj_tensor_name = f"{prefix}.v_proj.weight"
+        self.qkv_proj_tensor_name = f"{prefix}.qkv_proj.weight"
+        self.qkv_proj = QKVParallelLinear(
+            hidden_size=hidden_size,
+            head_size=self.head_dim,
+            total_num_heads=self.total_num_heads,
+            total_num_kv_heads=self.total_num_kv_heads,
+            bias=bias,
+            quant_config=quant_config,
+            prefix=f"{prefix}.qkv_proj",
+            weight_tensor=TENSOR_DICT[self.qkv_proj_tensor_name]
+        )
+
+        # self.q_proj_tensor_name = f"{prefix}.q_proj.weight"
+        # self.k_proj_tensor_name = f"{prefix}.k_proj.weight"
+        # self.v_proj_tensor_name = f"{prefix}.v_proj.weight"
         self.o_proj_tensor_name = f"{prefix}.o_proj.weight"
 
-        self.q_proj = ColumnParallelLinear(
-            input_size=hidden_size,
-            output_size=self.q_size,
-            bias=bias,
-            quant_config=quant_config,
-            prefix=f"{prefix}.q_proj",
-            weight_tensor=TENSOR_DICT[self.q_proj_tensor_name]
-        )
-        self.k_proj = ColumnParallelLinear(
-            input_size=hidden_size,
-            output_size=self.kv_size,
-            bias=bias,
-            quant_config=quant_config,
-            prefix=f"{prefix}.k_proj",
-            weight_tensor=TENSOR_DICT[self.k_proj_tensor_name]
-        )
-        self.v_proj = ColumnParallelLinear(
-            input_size=hidden_size,
-            output_size=self.kv_size,
-            bias=bias,
-            quant_config=quant_config,
-            prefix=f"{prefix}.v_proj",
-            weight_tensor=TENSOR_DICT[self.v_proj_tensor_name]
-        )
+        # self.q_proj = ColumnParallelLinear(
+        #     input_size=hidden_size,
+        #     output_size=self.q_size,
+        #     bias=bias,
+        #     quant_config=quant_config,
+        #     prefix=f"{prefix}.q_proj",
+        #     weight_tensor=TENSOR_DICT[self.q_proj_tensor_name]
+        # )
+        # self.k_proj = ColumnParallelLinear(
+        #     input_size=hidden_size,
+        #     output_size=self.kv_size,
+        #     bias=bias,
+        #     quant_config=quant_config,
+        #     prefix=f"{prefix}.k_proj",
+        #     weight_tensor=TENSOR_DICT[self.k_proj_tensor_name]
+        # )
+        # self.v_proj = ColumnParallelLinear(
+        #     input_size=hidden_size,
+        #     output_size=self.kv_size,
+        #     bias=bias,
+        #     quant_config=quant_config,
+        #     prefix=f"{prefix}.v_proj",
+        #     weight_tensor=TENSOR_DICT[self.v_proj_tensor_name]
+        # )
         self.o_proj = RowParallelLinear(
             input_size=self.total_num_heads * self.head_dim,
             output_size=hidden_size,
@@ -277,11 +282,11 @@ class LlamaAttention(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        # qkv, _ = self.qkv_proj(hidden_states)
-        # q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        q, _ = self.q_proj(hidden_states)
-        k, _ = self.k_proj(hidden_states)
-        v, _ = self.v_proj(hidden_states)
+        qkv, _ = self.qkv_proj(hidden_states)
+        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        # q, _ = self.q_proj(hidden_states)
+        # k, _ = self.k_proj(hidden_states)
+        # v, _ = self.v_proj(hidden_states)
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)
@@ -348,6 +353,10 @@ class LlamaDecoderLayer(nn.Module):
                                                 eps=config.rms_norm_eps,
                                                 weight_tensor=TENSOR_DICT[self.post_attention_layernorm_tensor_name])
 
+
+        self.attention_time = 0
+        self.mlp_time = 0
+
     def forward(
         self,
         positions: torch.Tensor,
@@ -361,13 +370,17 @@ class LlamaDecoderLayer(nn.Module):
         else:
             hidden_states, residual = self.input_layernorm(
                 hidden_states, residual)
+        start_time = time.perf_counter()
         hidden_states = self.self_attn(positions=positions,
                                        hidden_states=hidden_states)
+        self.attention_time += time.perf_counter() - start_time
 
         # Fully Connected
+        start_time = time.perf_counter()
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
         hidden_states = self.mlp(hidden_states)
+        self.mlp_time += time.perf_counter() - start_time
         return hidden_states, residual
 
 
@@ -450,8 +463,16 @@ class LlamaModel(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
+        # attention_times = []
+        # mlp_times = []
         for layer in self.layers[self.start_layer:self.end_layer]:
             hidden_states, residual = layer(positions, hidden_states, residual)
+            # attention_times.append(layer.attention_time)
+            # mlp_times.append(layer.mlp_time)
+            # layer.attention_time = 0
+            # layer.mlp_time = 0
+
+        # logger.info(f"Attention time: {sum(attention_times) * 1000:.3f} ms | MLP time: {sum(mlp_times) * 1000:.3f} ms | input_shape: {input_ids.shape}")
 
         # if not get_pp_group().is_last_rank:
         if not is_last_stage(get_pp_group().rank):
@@ -589,7 +610,7 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
                 logger.info("Connected to TensorManager server.")
                 break # 연결 성공
             except ConnectionRefusedError:
-                logger.info(f"Connection refused (Attempt {attempt + 1}/{max_retries}). Server might not be ready. Retrying in {retry_delay}s...")
+                logger.info(f"Connection refused (Attempt {attempt + 1}/{max_retries}). Server might not be ready. Retrying in {2**attempt}s...")
                 if attempt == max_retries - 1:
                     raise ValueError("Max connection attempts reached. Exiting.")
                 logger.info(f"Sleep {2**attempt}s...")
