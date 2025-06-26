@@ -586,7 +586,8 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         MANAGER_INSTANCE = TensorManager(address=(TENSOR_SERVER_HOST, TENSOR_SERVER_PORT), authkey=TENSOR_SERVER_AUTHKEY)
         if MANAGER_INSTANCE is None:
             raise ValueError("Failed to create TensorManager instance")
-        max_retries = 5
+        max_retries = 24 # 최대 120초 (2분)
+        wait_time = 5
         for attempt in range(max_retries):
             try:
                 # 서버에 연결 시도
@@ -594,11 +595,11 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
                 logger.info("Connected to TensorManager server.")
                 break # 연결 성공
             except ConnectionRefusedError:
-                logger.info(f"Connection refused (Attempt {attempt + 1}/{max_retries}). Server might not be ready. Retrying in {2**attempt}s...")
+                logger.info(f"Connection refused (Attempt {attempt + 1}/{max_retries}). Server might not be ready. Retrying in {wait_time}s...")
                 if attempt == max_retries - 1:
                     raise ValueError("Max connection attempts reached. Exiting.")
-                logger.info(f"Sleep {2**attempt}s...")
-                time.sleep(2**attempt)
+                logger.info(f"Sleep {wait_time}s...")
+                time.sleep(wait_time)
             except Exception as e:
                 logger.error(f"Error connecting to manager")
                 raise e
