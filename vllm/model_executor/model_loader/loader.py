@@ -417,7 +417,7 @@ class DefaultModelLoader(BaseModelLoader):
         device_config = vllm_config.device_config
         model_config = vllm_config.model_config
         target_device = torch.device(device_config.device)
-        self.download_model(model_config)
+        # self.download_model(model_config)
         with set_default_torch_dtype(model_config.dtype):
             with target_device:
                 # 이 모델은 LlamaForCausalLM 이다.
