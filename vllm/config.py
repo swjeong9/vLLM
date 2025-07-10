@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 import ast
 import copy
 import enum
@@ -1560,9 +1561,10 @@ class ParallelConfig:
     @property
     def start_layer_idx(self) -> int:
         pipeline_rank = self.pipeline_parallel_rank
+        pp_layers = [int(layer) for layer in os.getenv('VLLM_PP_LAYER_PARTITION', '').split(',')]
         layer_idx = 0
         for i in range(pipeline_rank):
-            layer_idx += self.parallel_strategy[i]
+            layer_idx += pp_layers[i]
         return layer_idx
 
     def _verify_args(self) -> None:
