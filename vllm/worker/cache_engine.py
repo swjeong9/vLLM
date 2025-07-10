@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """CacheEngine class for managing the KV cache."""
 from typing import List
-
+import time
 import torch
 
 from vllm.attention import get_attn_backend
@@ -11,6 +11,22 @@ from vllm.utils import (STR_DTYPE_TO_TORCH_DTYPE, LayerBlockType,
                         get_dtype_size, is_pin_memory_available)
 
 logger = init_logger(__name__)
+
+# tensor server store 로부터 텐서 정보 가져오기 위해서 사용
+from multiprocessing.managers import BaseManager, DictProxy
+
+class TensorManager(BaseManager):
+    pass
+
+TENSOR_DICT = {}
+
+TENSOR_SERVER_HOST = '127.0.0.1'
+TENSOR_SERVER_PORT = 50001
+TENSOR_SERVER_AUTHKEY = b'param_store'
+
+MANAGER_INSTANCE = None
+
+TensorManager.register('get_tensor_dict', proxytype=DictProxy)
 
 
 class CacheEngine:
@@ -23,6 +39,7 @@ class CacheEngine:
 
     def __init__(
         self,
+        ve: int,
         cache_config: CacheConfig,
         model_config: ModelConfig,
         parallel_config: ParallelConfig,
@@ -42,6 +59,9 @@ class CacheEngine:
         self.block_size = cache_config.block_size
         self.num_gpu_blocks = cache_config.num_gpu_blocks
         if self.num_gpu_blocks:
+            # 이 부분을 왜 하는지? -> pipeline parallelism 에서 pipelining 의 효과를 보기 위해서
+            # 여러 Request 를 중첩시켜야 한다. 이를 vLLM 에서는 virtual engine 이라고 한다.
+            # 결과적으로 하나의 virtual engine 에서 사용할 block 의 수는 아래와 같이 계산된다.
             self.num_gpu_blocks //= parallel_config.pipeline_parallel_size
         self.num_cpu_blocks = cache_config.num_cpu_blocks
         if self.num_cpu_blocks:
@@ -64,6 +84,53 @@ class CacheEngine:
         self.gpu_cache = self._allocate_kv_cache(
             self.num_gpu_blocks, self.device_config.device_type)
         self.cpu_cache = self._allocate_kv_cache(self.num_cpu_blocks, "cpu")
+
+    def get_gpu_cache_from_manager(self, ve: int):
+        if self.parallel_config.local_rank == -1:
+            raise ValueError("local_rank is not set")
+        tensor_server_port = TENSOR_SERVER_PORT + self.parallel_config.local_rank
+        MANAGER_INSTANCE = TensorManager(address=(TENSOR_SERVER_HOST, tensor_server_port), authkey=TENSOR_SERVER_AUTHKEY)
+        if MANAGER_INSTANCE is None:
+            raise ValueError("Failed to create TensorManager instance")
+        max_retries = 3 # 최대 9초 (3초 * 3번)
+        wait_time = 3
+        for attempt in range(max_retries):
+            try:
+                MANAGER_INSTANCE.connect()
+                logger.info("Connected to TensorManager server for CacheEngine.")
+                break
+            except ConnectionRefusedError:
+                logger.info(f"Connection refused (Attempt {attempt + 1}/{max_retries}). Server might not be ready. Retrying in {wait_time}s...")
+                if attempt == max_retries - 1:
+                    raise ValueError("Max connection attempts reached. Exiting.")
+                logger.info(f"Sleep {wait_time}s...")
+                time.sleep(wait_time)
+            except Exception as e:
+                logger.error(f"Error connecting to manager")
+                raise e
+        logger.info("TensorManager server connected successfully.")
+
+        try:
+            logger.info("Accessing Tensor Dict via Manager for CacheEngine.")
+            TENSOR_DICT = MANAGER_INSTANCE.get_tensor_dict()
+            if not TENSOR_DICT:
+                raise ValueError("Tensor Dictionary is empty")
+        except Exception as e:
+            logger.error(f"Error accessing Tensor Dict via Manager for CacheEngine: {e}")
+            raise e
+
+        kv_cache: List[torch.Tensor] = []
+        try:
+            for layer_idx in range(self.num_attention_layers):
+                cache_key = f"kv_cache.ve_{ve}.layer_{layer_idx}"
+                layer_kv_cache = TENSOR_DICT[cache_key]
+                kv_cache.append(layer_kv_cache)
+        except Exception as e:
+            logger.error(f"Error accessing Tensor Dict via Manager for CacheEngine: {e}")
+            raise e
+
+        return kv_cache
+
 
     def _allocate_kv_cache(
         self,

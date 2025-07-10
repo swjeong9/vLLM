@@ -56,6 +56,8 @@ class Worker(LocalOrDistributedWorkerBase):
         WorkerBase.__init__(self, vllm_config)
         self.parallel_config.rank = rank
         self.local_rank = local_rank
+        # 이후 model 및 cache 초기화 시 tensor manager 접근할 때 사용
+        self.vllm_config.parallel_config.local_rank = local_rank
         self.rank = rank
         self.distributed_init_method = distributed_init_method
         self.is_driver_worker = is_driver_worker
@@ -326,13 +328,13 @@ class Worker(LocalOrDistributedWorkerBase):
 
         This also warms up the model, which may record CUDA graphs.
         """
-        raise_if_cache_size_invalid(
-            num_gpu_blocks, self.cache_config.block_size,
-            self.cache_config.is_attention_free,
-            self.model_config.max_model_len,
-            self.parallel_config.pipeline_parallel_size)
+        # raise_if_cache_size_invalid(
+        #     num_gpu_blocks, self.cache_config.block_size,
+        #     self.cache_config.is_attention_free,
+        #     self.model_config.max_model_len,
+        #     self.parallel_config.pipeline_parallel_size)
 
-        self.cache_config.num_gpu_blocks = num_gpu_blocks
+        # self.cache_config.num_gpu_blocks = num_gpu_blocks
         self.cache_config.num_cpu_blocks = num_cpu_blocks
 
         if self.vllm_config.model_config.enable_sleep_mode:
@@ -348,9 +350,9 @@ class Worker(LocalOrDistributedWorkerBase):
     def _init_cache_engine(self):
         assert self.cache_config.num_gpu_blocks is not None
         self.cache_engine = [
-            CacheEngine(self.cache_config, self.model_config,
+            CacheEngine(ve, self.cache_config, self.model_config,
                         self.parallel_config, self.device_config)
-            for _ in range(self.parallel_config.pipeline_parallel_size)
+            for ve in range(self.parallel_config.pipeline_parallel_size)
         ]
         self.gpu_cache = [
             self.cache_engine[ve].gpu_cache

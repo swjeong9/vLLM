@@ -582,8 +582,11 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         ### 서버에서 텐서 불러오기 시작
         global TENSOR_DICT
         global MANAGER_INSTANCE
+        if vllm_config.parallel_config.local_rank == -1:
+            raise ValueError("local_rank is not set")
+        tensor_server_port = TENSOR_SERVER_PORT + vllm_config.parallel_config.local_rank
         # 매니저 객체 생성
-        MANAGER_INSTANCE = TensorManager(address=(TENSOR_SERVER_HOST, TENSOR_SERVER_PORT), authkey=TENSOR_SERVER_AUTHKEY)
+        MANAGER_INSTANCE = TensorManager(address=(TENSOR_SERVER_HOST, tensor_server_port), authkey=TENSOR_SERVER_AUTHKEY)
         if MANAGER_INSTANCE is None:
             raise ValueError("Failed to create TensorManager instance")
         max_retries = 24 # 최대 120초 (2분)
