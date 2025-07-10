@@ -122,8 +122,9 @@ class CacheEngine:
 
         kv_cache: List[torch.Tensor] = []
         try:
+            start_layer_idx = self.parallel_config.start_layer_idx
             for layer_idx in range(self.num_attention_layers):
-                cache_key = f"kv_cache.ve_{ve}.layer_{layer_idx}"
+                cache_key = f"kv_cache.ve_{ve}.layer_{start_layer_idx + layer_idx}"
                 layer_kv_cache = TENSOR_DICT[cache_key]
                 kv_cache.append(layer_kv_cache)
         except Exception as e:

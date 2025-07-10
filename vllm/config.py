@@ -1557,6 +1557,14 @@ class ParallelConfig:
             rank -= stage_size
         raise ValueError(f"Invalid rank: {rank}")
 
+    @property
+    def start_layer_idx(self) -> int:
+        pipeline_rank = self.pipeline_parallel_rank
+        layer_idx = 0
+        for i in range(pipeline_rank):
+            layer_idx += self.parallel_strategy[i]
+        return layer_idx
+
     def _verify_args(self) -> None:
         # Lazy import to avoid circular import
         from vllm.executor.executor_base import ExecutorBase
