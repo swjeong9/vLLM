@@ -219,94 +219,108 @@ class Worker(LocalOrDistributedWorkerBase):
         """
         # Profile the memory usage of the model and get the maximum number of
         # cache blocks that can be allocated with the remaining free memory.
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
+        # torch.cuda.empty_cache()
+        # torch.cuda.reset_peak_memory_stats()
 
-        self.init_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
+        # self.init_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
 
-        # Execute a forward pass with dummy inputs to profile the memory usage
-        # of the model.
-        self.model_runner.profile_run()
+        # # Execute a forward pass with dummy inputs to profile the memory usage
+        # # of the model.
+        # self.model_runner.profile_run()
 
-        self._assert_memory_footprint_increased_during_profiling()
+        # self._assert_memory_footprint_increased_during_profiling()
 
-        # GPU did not change their memory usage during the profiling.
-        free_gpu_memory, _ = torch.cuda.mem_get_info()
-        assert self.init_gpu_memory > free_gpu_memory, (
-            "Error in memory profiling. "
-            f"Initial free memory {self.init_gpu_memory/GiB_bytes} GiB, "
-            f"current free memory {free_gpu_memory/GiB_bytes} GiB. "
-            f"This happens when the GPU memory was not properly cleaned up "
-            f"before initializing the vLLM instance.")
+        # # GPU did not change their memory usage during the profiling.
+        # free_gpu_memory, _ = torch.cuda.mem_get_info()
+        # assert self.init_gpu_memory > free_gpu_memory, (
+        #     "Error in memory profiling. "
+        #     f"Initial free memory {self.init_gpu_memory/GiB_bytes} GiB, "
+        #     f"current free memory {free_gpu_memory/GiB_bytes} GiB. "
+        #     f"This happens when the GPU memory was not properly cleaned up "
+        #     f"before initializing the vLLM instance.")
 
-        # Get the peak memory allocation recorded by torch
-        peak_torch_memory = torch.cuda.memory_stats(
-        )["allocated_bytes.all.peak"]
+        # # Get the peak memory allocation recorded by torch
+        # peak_torch_memory = torch.cuda.memory_stats(
+        # )["allocated_bytes.all.peak"]
 
-        # Check for any memory left around that may have been allocated on the
-        # gpu outside of `torch`. NCCL operations, for example, can use a few
-        # GB during a forward pass.
-        torch.cuda.empty_cache()
-        torch_allocated_bytes = torch.cuda.memory_stats(
-        )["allocated_bytes.all.current"]
-        total_allocated_bytes = torch.cuda.mem_get_info(
-        )[1] - torch.cuda.mem_get_info()[0]
+        # # Check for any memory left around that may have been allocated on the
+        # # gpu outside of `torch`. NCCL operations, for example, can use a few
+        # # GB during a forward pass.
+        # torch.cuda.empty_cache()
+        # torch_allocated_bytes = torch.cuda.memory_stats(
+        # )["allocated_bytes.all.current"]
+        # total_allocated_bytes = torch.cuda.mem_get_info(
+        # )[1] - torch.cuda.mem_get_info()[0]
 
-        # Reset after emptying torch cache
-        free_gpu_memory = torch.cuda.mem_get_info()[0]
+        # # Reset after emptying torch cache
+        # free_gpu_memory = torch.cuda.mem_get_info()[0]
 
-        # Total forward allocation (current) is equal to the diff in free memory
-        fwd_alloc_bytes = self.init_gpu_memory - free_gpu_memory
-        # We assume current non-torch allocation is equal to peak
-        non_torch_alloc_bytes = max(0, fwd_alloc_bytes - torch_allocated_bytes)
-        # Total forward allocation (peak) is peak torch + non-torch
-        peak_memory = peak_torch_memory + non_torch_alloc_bytes
+        # # Total forward allocation (current) is equal to the diff in free memory
+        # fwd_alloc_bytes = self.init_gpu_memory - free_gpu_memory
+        # # We assume current non-torch allocation is equal to peak
+        # non_torch_alloc_bytes = max(0, fwd_alloc_bytes - torch_allocated_bytes)
+        # # Total forward allocation (peak) is peak torch + non-torch
+        # peak_memory = peak_torch_memory + non_torch_alloc_bytes
 
-        available_kv_cache_memory = (
-            total_gpu_memory * self.cache_config.gpu_memory_utilization -
-            peak_memory)
+        # available_kv_cache_memory = (
+        #     total_gpu_memory * self.cache_config.gpu_memory_utilization -
+        #     peak_memory)
 
-        # Calculate the number of blocks that can be allocated with the
-        # profiled peak memory.
+        # # Calculate the number of blocks that can be allocated with the
+        # # profiled peak memory.
+        # cache_block_size = self.get_cache_block_size_bytes()
+        # if cache_block_size == 0:
+        #     num_gpu_blocks = 0
+        #     num_cpu_blocks = 0
+        # else:
+        #     num_gpu_blocks = int(available_kv_cache_memory // cache_block_size)
+        #     num_cpu_blocks = int(self.cache_config.swap_space_bytes //
+        #                          cache_block_size)
+        # num_gpu_blocks = max(num_gpu_blocks, 0)
+        # num_cpu_blocks = max(num_cpu_blocks, 0)
+
+        # GiB = lambda b: b / GiB_bytes
+        # logger.debug(
+        #     "Initial free memory: %.2f GiB, free memory: %.2f GiB, "
+        #     "total GPU memory: %.2f GiB", GiB(self.init_gpu_memory),
+        #     GiB(free_gpu_memory), GiB(total_gpu_memory))
+        # logger.debug(
+        #     "Peak torch memory: %.2f GiB, non-torch forward-pass memory: "
+        #     "%.2f GiB, available KVCache memory: %.2f GiB",
+        #     GiB(peak_torch_memory), GiB(non_torch_alloc_bytes),
+        #     GiB(available_kv_cache_memory))
+
+        # msg = ("Memory profiling completed\n"
+        #        "the current vLLM instance can use "
+        #        "total_gpu_memory "
+        #        f"({GiB(total_gpu_memory):.2f}GiB)"
+        #        " x gpu_memory_utilization "
+        #        f"({self.cache_config.gpu_memory_utilization:.2f})"
+        #        f" = {GiB(total_gpu_memory * self.cache_config.gpu_memory_utilization):.2f}GiB\n"
+        #        "Peak torch memory: "
+        #        f"{GiB(peak_torch_memory):.2f}GiB;"
+        #        " non-torch forward-pass memory: "
+        #        f"{GiB(non_torch_alloc_bytes):.2f}GiB;"
+        #        " the rest of the memory reserved for KV Cache is "
+        #        f"{GiB(available_kv_cache_memory):.2f}GiB.")
+
+        # logger.info(msg)
+        # # Final cleanup
+        # gc.collect()
+
+
         cache_block_size = self.get_cache_block_size_bytes()
         if cache_block_size == 0:
             num_gpu_blocks = 0
             num_cpu_blocks = 0
         else:
-            num_gpu_blocks = int(available_kv_cache_memory // cache_block_size)
             num_cpu_blocks = int(self.cache_config.swap_space_bytes //
                                  cache_block_size)
-        num_gpu_blocks = max(num_gpu_blocks, 0)
+            
+        # 우리는 앞으로 GPU Block 은 외부의 Tensor Store 에서 받아오도록 할 것이다.
+        # 따라서, cpu block 은 계산하되 gpu block 은 override 인자를 통해서 처리하도록 한다.
+        num_gpu_blocks = 0 # dummy
         num_cpu_blocks = max(num_cpu_blocks, 0)
-
-        GiB = lambda b: b / GiB_bytes
-        logger.debug(
-            "Initial free memory: %.2f GiB, free memory: %.2f GiB, "
-            "total GPU memory: %.2f GiB", GiB(self.init_gpu_memory),
-            GiB(free_gpu_memory), GiB(total_gpu_memory))
-        logger.debug(
-            "Peak torch memory: %.2f GiB, non-torch forward-pass memory: "
-            "%.2f GiB, available KVCache memory: %.2f GiB",
-            GiB(peak_torch_memory), GiB(non_torch_alloc_bytes),
-            GiB(available_kv_cache_memory))
-
-        msg = ("Memory profiling completed\n"
-               "the current vLLM instance can use "
-               "total_gpu_memory "
-               f"({GiB(total_gpu_memory):.2f}GiB)"
-               " x gpu_memory_utilization "
-               f"({self.cache_config.gpu_memory_utilization:.2f})"
-               f" = {GiB(total_gpu_memory * self.cache_config.gpu_memory_utilization):.2f}GiB\n"
-               "Peak torch memory: "
-               f"{GiB(peak_torch_memory):.2f}GiB;"
-               " non-torch forward-pass memory: "
-               f"{GiB(non_torch_alloc_bytes):.2f}GiB;"
-               " the rest of the memory reserved for KV Cache is "
-               f"{GiB(available_kv_cache_memory):.2f}GiB.")
-
-        logger.info(msg)
-        # Final cleanup
-        gc.collect()
 
         return num_gpu_blocks, num_cpu_blocks
 
@@ -348,7 +362,7 @@ class Worker(LocalOrDistributedWorkerBase):
         self._warm_up_model()
 
     def _init_cache_engine(self):
-        assert self.cache_config.num_gpu_blocks is not None
+        # assert self.cache_config.num_gpu_blocks is not None
         self.cache_engine = [
             CacheEngine(ve, self.cache_config, self.model_config,
                         self.parallel_config, self.device_config)
