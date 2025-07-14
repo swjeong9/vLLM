@@ -297,7 +297,10 @@ def initialize_ray_cluster(
                      ignore_reinit_error=True,
                      num_gpus=parallel_config.world_size)
     else:
-        ray.init(address=ray_address, ignore_reinit_error=True)
+        # 인자에 ray_address 가 있으나, 어째선지 ray_distributed_executor.py 에서 보면 address 를 넣어주지 않음.
+        # 따라서 수동으로 ParallelConfig 에 추가해 준 ray address 를 사용하도록 한다.
+        logger.info(f"Initializing Ray with address: {parallel_config.ray_address}")
+        ray.init(address=parallel_config.ray_address, ignore_reinit_error=True)
 
     if parallel_config.placement_group:
         # Placement group is already set.

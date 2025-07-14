@@ -1367,6 +1367,8 @@ class ParallelConfig:
     data_parallel_master_port: int = 29500  # Port of the data parallel master.
     enable_expert_parallel: bool = False  # Use EP instead of TP for MoE layers.
 
+    ray_address: str = "auto"
+
     # 이후 tensor manager 접근시 사용
     local_rank: int=-1
 
