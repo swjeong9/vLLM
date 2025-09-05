@@ -589,7 +589,7 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         MANAGER_INSTANCE = TensorManager(address=(TENSOR_SERVER_HOST, tensor_server_port), authkey=TENSOR_SERVER_AUTHKEY)
         if MANAGER_INSTANCE is None:
             raise ValueError("Failed to create TensorManager instance")
-        max_retries = 24 # 최대 120초 (2분)
+        max_retries = 120 # 최대 600초 (2분)
         wait_time = 5
         for attempt in range(max_retries):
             try:
