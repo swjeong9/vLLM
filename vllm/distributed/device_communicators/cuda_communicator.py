@@ -16,13 +16,25 @@ class CudaCommunicator(DeviceCommunicatorBase):
                  device_group: Optional[ProcessGroup] = None,
                  unique_name: str = ""):
         super().__init__(cpu_group, device, device_group, unique_name)
+
         if "tp" not in unique_name:
             # only tp uses custom allreduce
             use_custom_allreduce = False
         else:
             from vllm.distributed.parallel_state import (
                 _ENABLE_CUSTOM_ALL_REDUCE)
-            use_custom_allreduce = _ENABLE_CUSTOM_ALL_REDUCE
+            from vllm.logger import init_logger
+            logger = init_logger(__name__)
+
+            # FIXME: CustomAllreduce causes CPU group all_gather conflicts in hetero TP setup
+            # Disable it to avoid gloo backend deadlocks during initialization
+            if _ENABLE_CUSTOM_ALL_REDUCE:
+                logger.warning(
+                    "CustomAllreduce is enabled by default (_ENABLE_CUSTOM_ALL_REDUCE=True), "
+                    "but explicitly disabled for heterogeneous TP configurations to avoid "
+                    "CPU group all_gather conflicts and gloo backend deadlocks."
+                )
+            use_custom_allreduce = False  # _ENABLE_CUSTOM_ALL_REDUCE
         use_pynccl = True
 
         self.use_pynccl = use_pynccl

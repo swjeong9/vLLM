@@ -176,18 +176,32 @@ class GroupCoordinator:
         self.device_group = None
         self.cpu_group = None
 
+        import time
+
         for ranks in group_ranks:
+            t1 = time.time()
+            logger.info(f"rank {self.rank}: [{self.unique_name}] [{t1:.6f}] BEFORE device new_group({ranks})")
             device_group = torch.distributed.new_group(
                 ranks, backend=torch_distributed_backend)
+            t2 = time.time()
+            logger.info(f"rank {self.rank}: [{self.unique_name}] [{t2:.6f}] AFTER device new_group({ranks}), took {t2-t1:.3f}s")
             # a group with `gloo` backend, to allow direct coordination between
             # processes through the CPU.
+            t3 = time.time()
+            logger.info(f"rank {self.rank}: [{self.unique_name}] [{t3:.6f}] BEFORE cpu new_group({ranks})")
             cpu_group = torch.distributed.new_group(ranks, backend="gloo")
+            t4 = time.time()
+            logger.info(f"rank {self.rank}: [{self.unique_name}] [{t4:.6f}] AFTER cpu new_group({ranks}), took {t4-t3:.3f}s")
+
             if self.rank in ranks:
                 self.ranks = ranks
                 self.world_size = len(ranks)
                 self.rank_in_group = ranks.index(self.rank)
                 self.device_group = device_group
                 self.cpu_group = cpu_group
+
+        t_loop_end = time.time()
+        logger.info(f"rank {self.rank}: [{self.unique_name}] [{t_loop_end:.6f}] Completed for loop")
 
         assert self.cpu_group is not None
         assert self.device_group is not None
@@ -200,28 +214,43 @@ class GroupCoordinator:
         else:
             self.device = torch.device("cpu")
 
+        # Log device mapping to verify rank-to-device assignment
+        logger.info(f"rank {self.rank}: [{self.unique_name}] Device mapping - global_rank: {self.rank}, local_rank: {local_rank}, device: {self.device}, rank_in_group: {self.rank_in_group if hasattr(self, 'rank_in_group') else 'not set'}, ranks: {self.ranks if hasattr(self, 'ranks') else 'not set'}")
+
         self.use_device_communicator = use_device_communicator
 
         self.device_communicator: DeviceCommunicatorBase = None  # type: ignore
         if use_device_communicator and self.world_size > 1:
+            t1 = time.time()
+            logger.info(f"rank {self.rank}: [{self.unique_name}] [{t1:.6f}] BEFORE device_communicator init")
             device_comm_cls = resolve_obj_by_qualname(
                 current_platform.get_device_communicator_cls())
+            logger.info(f"rank {self.rank}: [{self.unique_name}] device_comm_cls: {device_comm_cls}")
+            logger.info(f"rank {self.rank}: [{self.unique_name}] device_comm_cls.__name__: {device_comm_cls.__name__}")
             self.device_communicator = device_comm_cls(
                 cpu_group=self.cpu_group,
                 device=self.device,
                 device_group=self.device_group,
                 unique_name=self.unique_name,
             )
+            t2 = time.time()
+            logger.info(f"rank {self.rank}: [{self.unique_name}] [{t2:.6f}] AFTER device_communicator init, took {t2-t1:.3f}s")
 
         from vllm.distributed.device_communicators.shm_broadcast import (
             MessageQueue)
         self.mq_broadcaster: Optional[MessageQueue] = None
         if use_message_queue_broadcaster and self.world_size > 1:
+            t1 = time.time()
+            logger.info(f"rank {self.rank}: [{self.unique_name}] [{t1:.6f}] BEFORE mq_broadcaster init")
             self.mq_broadcaster = MessageQueue.create_from_process_group(
                 self.cpu_group, 1 << 22, 6)
+            t2 = time.time()
+            logger.info(f"rank {self.rank}: [{self.unique_name}] [{t2:.6f}] AFTER mq_broadcaster init, took {t2-t1:.3f}s")
 
         from vllm.platforms import current_platform
         self.use_custom_op_call = current_platform.is_cuda_alike()
+
+        logger.info(f"rank {self.rank}: [{self.unique_name}] GroupCoordinator.__init__ completed")
 
     @property
     def first_rank(self):
@@ -1132,6 +1161,10 @@ def initialize_hetero_model_parallel(
                                     backend,
                                     use_message_queue_broadcaster=True,
                                     group_name="tp")
+
+    # 모든 TP 그룹 초기화 완료 후 최종 검증
+    assert _TP is not None, f"rank {rank}: TP group assignment failed"
+    logger.info(f"rank {rank}: TP initialization complete. My TP group: {_TP.ranks}")
 
     # driver worker 는 tp group 내에서 첫 번째 rank임
     driver_worker_ranks = [group_ranks[x][0] for x in range(len(group_ranks))]
